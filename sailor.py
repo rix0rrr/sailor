@@ -216,20 +216,6 @@ class Box(View):
 #  CONTROL classes
 
 
-class Event(object):
-  def __init__(self, type, what, target, app):
-    self.type = type
-    self.key = what
-    self.what = what
-    self.target = target
-    self.last = None
-    self.propagating = True
-    self.app = app
-
-  def stop(self):
-    self.propagating = False
-
-
 class Control(object):
   def __init__(self, fg=white, bg=black, id=None):
     self.fg = fg
@@ -368,6 +354,10 @@ class SelectDate(Control):
     if cell == self.value.day:
       attr = curses.A_STANDOUT if self.has_focus else curses.A_UNDERLINE
     return Display(str(cell), attr=attr)
+
+  @property
+  def date(self):
+    return self.value.date()
 
   def render(self, app):
     self.has_focus = app.contains_focus(self)
@@ -563,6 +553,29 @@ class Edit(Control):
         ev.stop()
 
 
+class Button(Control):
+  def __init__(self, caption, on_click=None, fg=yellow, **kwargs):
+    super(Button, self).__init__(fg=fg, **kwargs)
+    self.caption = caption
+    self.on_click = on_click
+    self.can_focus = True
+
+  def render(self, app):
+    return Display('[ %s ]' % self.caption, fg=self.fg,
+                   attr=curses.A_STANDOUT if app.contains_focus(self) else 0)
+
+  def on_event(self, ev):
+    if ev.type == 'key':
+      if is_enter(ev) or ev.what == ord(' '):
+        if self.on_click:
+          self.on_click(ev.app)
+          ev.stop()
+
+
+#----------------------------------------------------------------------
+#  FRAMEWORK classes
+
+
 class Rect(object):
   def __init__(self, app, screen, x, y, w, h):
     self.app = app
@@ -588,6 +601,20 @@ class Rect(object):
 
   def __repr__(self):
     return '(%s,%s,%s,%s)' % (self.x, self.y, self.w, self.h)
+
+
+class Event(object):
+  def __init__(self, type, what, target, app):
+    self.type = type
+    self.key = what
+    self.what = what
+    self.target = target
+    self.last = None
+    self.propagating = True
+    self.app = app
+
+  def stop(self):
+    self.propagating = False
 
 
 def object_tree(root):
@@ -736,6 +763,13 @@ class App(object):
       self.active_layer._focus_first()
     if ev.key in [curses.KEY_UP, SHIFT_TAB]:
       self.active_layer._focus_last()
+
+  def find(self, id):
+    for parent, child in object_tree(self):
+      if child.id == id:
+        return child
+    raise RuntimeError('No such control: %s' % id)
+
 
 
 def walk(root):
