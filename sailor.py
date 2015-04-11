@@ -37,6 +37,9 @@ def is_enter(ev):
   return ev.key in [curses.KEY_ENTER, ALT_ENTER]
 
 
+def ident(x):
+  return x
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -54,20 +57,22 @@ class View(object):
 
 class Display(View):
   def __init__(self, text, min_width=0, fg=white, bg=black, attr=0):
-    self.text = text
+    self.lines = str(text).split('\n')
     self.fg = fg
     self.bg = bg
     self.min_width = min_width
     self.attr = attr
 
   def size(self, rect):
-    return max(self.min_width, len(self.text)), 1
+    return max(self.min_width, max(len(l) for l in self.lines)), len(self.lines)
 
   def disp(self, rect):
     col = rect.get_color(self.fg, self.bg)
     print_width = max(0, rect.w)
-    if print_width > 0 and rect.h > 0:
-      rect.screen.addstr(rect.y, rect.x, self.text[:print_width], curses.color_pair(col) | self.attr)
+    lines = self.lines[:rect.h]
+    if print_width > 0 and lines:
+      for i, line in enumerate(lines):
+        rect.screen.addstr(rect.y + i, rect.x, line[:print_width], curses.color_pair(col) | self.attr)
 
 
 class HFill(View):
@@ -222,12 +227,13 @@ class Control(object):
     self.bg = bg
     self.id = id
     self.can_focus = False
+    self.controls = []
 
   def render(self, app):
     raise RuntimeError('Not implemented: render()')
 
   def children(self):
-    return []
+    return self.controls
 
   def on_event(self, ev):
     pass
@@ -236,7 +242,7 @@ class Control(object):
     if ctrl is self:
       return True
 
-    for child in self.children():
+    for child in self.controls:
       if child.contains(ctrl):
         return True
 
@@ -250,13 +256,35 @@ class Control(object):
 
 
 class Text(Control):
-  def __init__(self, text, **kwargs):
+  def __init__(self, value, **kwargs):
     super(Text, self).__init__(**kwargs)
-    self.text = text
+    self.value = value
     self.can_focus = False
 
+  @property
+  def text(self):
+    return self.value
+
   def render(self, app):
-    return Display(self.text, fg=self.fg, bg=self.bg)
+    return Display(self.value, fg=self.fg, bg=self.bg)
+
+
+def propagate_focus(ev, controls, layer, keys_back, keys_fwd):
+  """Propagate focus events forwards and backwards through a list of controls."""
+  if ev.type == 'key':
+    if ev.key in keys_back + keys_fwd:
+      back = ev.key in keys_back
+      current = ev.app.find_ancestor(ev.last, controls)
+      if not current:
+        return False
+
+      i = controls.index(current)
+      while 0 <= i < len(controls) and ev.propagating:
+        i += -1 if back else 1
+        if 0 <= i < len(controls) and layer.focus(controls[i], backwards=back):
+          ev.stop()
+          return True
+  return False
 
 
 class Panel(Control):
@@ -269,21 +297,34 @@ class Panel(Control):
     return Box(Vertical([c.render(app) for c in self.controls]),
                caption=self.caption.render(app) if self.caption else None)
 
-  def children(self):
-    return self.controls
+  def on_event(self, ev):
+    propagate_focus(ev, self.controls, ev.app.layer(self),
+                    [curses.KEY_UP, SHIFT_TAB],
+                    [curses.KEY_DOWN, curses.ascii.TAB])
+
+
+class Stacked(Control):
+  def __init__(self, controls, **kwargs):
+    super(Stacked, self).__init__(**kwargs)
+    self.controls = controls
+
+  def render(self, app):
+    return Vertical([c.render(app) for c in self.controls])
 
   def on_event(self, ev):
-    if ev.key in [curses.KEY_UP, curses.KEY_DOWN, curses.ascii.TAB, SHIFT_TAB]:
-      up = ev.key in [curses.KEY_UP, SHIFT_TAB]
-      current = ev.app.find_ancestor(ev.last, self.controls)
-      if not current:
-        return
+    propagate_focus(ev, self.controls, ev.app.layer(self),
+                    [curses.KEY_UP, SHIFT_TAB],
+                    [curses.KEY_DOWN, curses.ascii.TAB])
 
-      i = self.controls.index(current)
-      while 0 <= i < len(self.controls) and ev.propagating:
-        i += -1 if up else 1
-        if 0 <= i < len(self.controls) and ev.app.layer(self).focus(self.controls[i]):
-          ev.stop()
+
+class Option(object):
+  """Helper class to attach data to a string."""
+  def __init__(self, value, caption=None):
+    self.value = value
+    self.caption = caption or str(value)
+
+  def __str__(self):
+    return self.caption
 
 
 class Labeled(Control):
@@ -405,22 +446,10 @@ class Composite(Control):
     rendered = list(itertools.chain(*list(zip(xs, itertools.repeat(m)))))
     return Horizontal(rendered)
 
-  def children(self):
-    return self.controls
-
   def on_event(self, ev):
-    if ev.type == 'key':
-      if ev.key in [curses.KEY_LEFT, SHIFT_TAB, curses.KEY_RIGHT, curses.ascii.TAB]:
-        left = ev.key in [curses.KEY_LEFT, SHIFT_TAB]
-        current = ev.app.find_ancestor(ev.last, self.controls)
-        if not current:
-          return
-
-        i = self.controls.index(current)
-        while 0 <= i < len(self.controls) and ev.propagating:
-          i += -1 if left else 1
-          if 0 <= i < len(self.controls) and ev.app.layer(self).focus(self.controls[i]):
-            ev.stop()
+    propagate_focus(ev, self.controls, ev.app.layer(self),
+                    [curses.KEY_LEFT, SHIFT_TAB],
+                    [curses.KEY_RIGHT, curses.ascii.TAB])
 
 class Popup(Control):
   def __init__(self, x, y, inner, on_close, caption='', **kwargs):
@@ -488,6 +517,10 @@ class DateCombo(Control):
     super(DateCombo, self).__init__(**kwargs)
     self.value = value or datetime.datetime.now()
     self.can_focus = True
+
+  @property
+  def date(self):
+    return self.value.date()
 
   def render(self, app):
     attr = curses.A_STANDOUT if app.contains_focus(self) else 0
@@ -572,6 +605,30 @@ class Button(Control):
           ev.stop()
 
 
+class PreviewPane(Control):
+  def __init__(self, lines, **kwargs):
+    super(PreviewPane, self).__init__(**kwargs)
+    self.lines = lines
+    self.can_focus = True
+    self.scroll_offset = 0
+
+  def render(self, app):
+    attr = 0
+    if app.contains_focus(self):
+      attr = curses.A_BOLD
+    self.last_render = Display('\n'.join(self.lines[self.scroll_offset:]), attr=attr)
+    return self.last_render
+
+  def on_event(self, ev):
+    if ev.type == 'key':
+      if ev.key == curses.KEY_UP and self.scroll_offset > 0:
+        scroll_offset -= 1
+        ev.stop()
+      if ev.key == curses.KEY_DOWN and self.scroll_offset < len(self.lines) - self.last_render.rect.h:
+        scroll_offset += 1
+        ev.stop()
+
+
 #----------------------------------------------------------------------
 #  FRAMEWORK classes
 
@@ -618,23 +675,22 @@ class Event(object):
 
 
 def object_tree(root):
-  yield None, root
-  stack = [root]
+  stack = [(None, root)]
   while stack:
-    parent = stack.pop()
-    children = parent.children()
-    for child in children:
-      yield parent, child
-    stack.extend(reversed(children))
+    parent, obj = stack.pop()
+    yield parent, obj
+    children = obj.children()
+    stack.extend((obj, c) for c in reversed(children))
 
 
-class Layer(object):
+class Layer(Control):
   """A modal layer in the app."""
 
-  def __init__(self, root):
+  def __init__(self, root, app):
+    super(Layer, self).__init__()
     self.root = root
     self.focused = self.root
-    self.can_focus = False
+    self.app = app
 
     self._focus_first()
 
@@ -652,44 +708,43 @@ class Layer(object):
         self.focus(child)
         return
 
-  def children(self):
-    return [self.root]
-
-  def focus(self, ctrl):
+  def focus(self, ctrl, backwards=False):
     if ctrl.can_focus:
-      self.focused.on_event(Event('blur', None, self.focused, self))
+      self.focused.on_event(Event('blur', None, self.focused, self.app))
       self.focused = ctrl
-      self.focused.on_event(Event('focus', None, self.focused, self))
+      self.focused.on_event(Event('focus', None, self.focused, self.app))
       return True
-    for child in ctrl.children():
-      if self.focus(child):
+
+    order = reversed if backwards else ident
+
+    for child in order(ctrl.children()):
+      if self.focus(child, backwards=backwards):
         return True
     return False
 
   def children(self):
     return [self.root]
 
-  def on_event(self, ev):
-    pass
-
   def render(self, app):
     return self.root.render(app)
 
 
-class App(object):
+class App(Control):
   def __init__(self, root):
+    super(App, self).__init__()
     self.exit = False
     self.screen = None
-    self.layers = [Layer(root)]
+    self.layers = []
     self.color_cache = {}
     self.color_counter = 1
+    self.push_layer(root)
 
   @property
   def active_layer(self):
     return self.layers[-1]
 
   def push_layer(self, control):
-    self.layers.append(Layer(control))
+    self.layers.append(Layer(control, self))
 
   def pop_layer(self):
     self.layers.pop()
@@ -744,8 +799,6 @@ class App(object):
       view.display(Rect(self, self.screen, 0, 0, w, h))
     self.screen.refresh()
 
-    # FIXME: Resize making it greater :x
-
   def dispatch_event(self, ev):
     tgt = ev.target
     while tgt and ev.propagating:
@@ -769,7 +822,6 @@ class App(object):
       if child.id == id:
         return child
     raise RuntimeError('No such control: %s' % id)
-
 
 
 def walk(root):
