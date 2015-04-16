@@ -540,6 +540,30 @@ class DateCombo(Control):
       self.value = popup.inner.value
 
 
+class Time(Composite):
+  def __init__(self, value=None, **kwargs):
+    self.value = value or datetime.datetime.utcnow().time()
+
+    now_h = self.value.strftime('%H')
+    now_m = '%02d' % (int(self.value.minute / 5) * 5)
+
+    hours = ['%02d' % h for h in range(0, 24)]
+    minutes = ['%02d' % m for m in range(0, 60, 5)]
+
+    self.hour_combo = Combo(id='hour', choices=hours, index=hours.index(now_h))
+    self.min_combo = Combo(id='min', choices=minutes, index=minutes.index(now_m))
+
+    super(Time, self).__init__([
+      self.hour_combo,
+      Text(':'),
+      self.min_combo,
+      Text(' UTC')], **kwargs)
+
+  @property
+  def time(self):
+    return datetime.time(int(self.hour_combo.value), int(self.min_combo.value))
+
+
 class Edit(Control):
   def __init__(self, value, **kwargs):
     super(Edit, self).__init__(**kwargs)
@@ -550,12 +574,12 @@ class Edit(Control):
   def render(self, app):
     if app.contains_focus(self):
       hi = self.value[self.cursor] if self.cursor < len(self.value) else ' '
-      return Horizontal([Display(self.value[:self.cursor], attr=curses.A_UNDERLINE),
-                         Display(hi, attr=curses.A_REVERSE),
-                         Display(self.value[self.cursor+1:], attr=curses.A_UNDERLINE),
+      return Horizontal([Display(self.value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
+                         Display(hi, fg=self.fg, attr=curses.A_REVERSE),
+                         Display(self.value[self.cursor+1:], fg=self.fg, attr=curses.A_UNDERLINE),
                          ])
     else:
-      return Display(self.value)
+      return Display(self.value, fg=self.fg)
 
   def on_event(self, ev):
     if ev.type == 'key':
@@ -610,22 +634,31 @@ class PreviewPane(Control):
     super(PreviewPane, self).__init__(**kwargs)
     self.lines = lines
     self.can_focus = True
-    self.scroll_offset = 0
+    self.v_scroll_offset = 0
+    self.h_scroll_offset = 0
 
   def render(self, app):
     attr = 0
     if app.contains_focus(self):
       attr = curses.A_BOLD
-    self.last_render = Display('\n'.join(self.lines[self.scroll_offset:]), attr=attr)
+
+    display = (l[self.h_scroll_offset:] for l in self.lines[self.v_scroll_offset:])
+    self.last_render = Display('\n'.join(display), attr=attr)
     return self.last_render
 
   def on_event(self, ev):
     if ev.type == 'key':
-      if ev.key == curses.KEY_UP and self.scroll_offset > 0:
-        scroll_offset -= 1
+      if ev.key == curses.KEY_UP and self.v_scroll_offset > 0:
+        self.v_scroll_offset -= 1
         ev.stop()
-      if ev.key == curses.KEY_DOWN and self.scroll_offset < len(self.lines) - self.last_render.rect.h:
-        scroll_offset += 1
+      if ev.key == curses.KEY_DOWN and self.v_scroll_offset < len(self.lines) - self.last_render.rect.h:
+        self.v_scroll_offset += 1
+        ev.stop()
+      if ev.key == curses.KEY_LEFT and self.h_scroll_offset > 0:
+        self.h_scroll_offset = max(0, self.h_scroll_offset - 10)
+        ev.stop()
+      if ev.key == curses.KEY_RIGHT:
+        self.h_scroll_offset += 10
         ev.stop()
 
 
@@ -738,6 +771,12 @@ class App(Control):
     self.color_cache = {}
     self.color_counter = 1
     self.push_layer(root)
+    self.timers = []
+
+  def enqueue(self, delta, on_time):
+    deadline = datetime.datetime.now() + delta
+    self.timers.append((deadline, on_time))
+    self.timers.sort()
 
   @property
   def active_layer(self):
@@ -782,13 +821,30 @@ class App(Control):
       self.color_counter += 1
     return self.color_cache[tup]
 
+  @property
+  def ch_wait_time(self):
+    if self.timers:
+      # Time until next timer
+      return max(0, int((self.timers[0][0] - datetime.datetime.now()).total_seconds() * 1000))
+    # Indefinite wait
+    return -1
+
+  def fire_timers(self):
+    now = datetime.datetime.now()
+    while self.timers and self.timers[0][0] <= now:
+      _, on_time = self.timers.pop(0)
+      on_time(self)
+
   def run(self, screen):
     curses.curs_set(0)
     self.screen = screen
     while not self.exit:
       self.update()
+      self.screen.timeout(self.ch_wait_time)
       c = self.screen.getch()
-      self.dispatch_event(Event('key', c, self.active_layer.focused, self))
+      if c != -1:
+        self.dispatch_event(Event('key', c, self.active_layer.focused, self))
+      self.fire_timers()
 
   def update(self):
     h, w = self.screen.getmaxyx()
