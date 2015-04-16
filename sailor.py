@@ -440,7 +440,12 @@ class SelectList(Control):
         self.index += 1
         self.scroll_offset = max(self.scroll_offset, self.index - self.height + 1)
         ev.stop()
-
+      if ev.key == curses.KEY_HOME:
+        self.index = 0
+        ev.stop()
+      if ev.key == curses.KEY_END:
+        self.index = len(self.choices) - 1
+        ev.stop()
 
 
 class SelectDate(Control):
