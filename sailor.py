@@ -11,7 +11,7 @@ logger = logging.getLogger('sailor')
 
 CTRL_A = 1
 CTRL_E = 5
-ALT_BS = 127   # Don't feel like finding out why
+MAC_BACKSPACE = 127   # Don't feel like finding out why
 ALT_ENTER = 10 # Don't feel like finding out why
 SHIFT_TAB = 353
 
@@ -583,14 +583,14 @@ class Edit(Control):
 
   def on_event(self, ev):
     if ev.type == 'key':
-      if ev.key == CTRL_A:
+      if ev.key in [CTRL_A, curses.KEY_HOME]:
         self.cursor = 0
         ev.stop()
-      if ev.key == CTRL_E:
+      if ev.key in [CTRL_E, curses.KEY_END]:
         self.cursor = len(self.value)
         ev.stop()
-      if ev.key in [curses.KEY_BACKSPACE, ALT_BS]:
-        self.value = self.value[:self.cursor] + self.value[self.cursor:]
+      if ev.key in [curses.KEY_BACKSPACE, MAC_BACKSPACE]:
+        self.value = self.value[:self.cursor-1] + self.value[self.cursor:]
         self.cursor = max(0, self.cursor - 1)
         ev.stop()
       if ev.key == curses.ascii.DEL:
