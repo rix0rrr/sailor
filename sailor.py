@@ -648,18 +648,32 @@ class PreviewPane(Control):
 
   def on_event(self, ev):
     if ev.type == 'key':
-      if ev.key == curses.KEY_UP and self.v_scroll_offset > 0:
-        self.v_scroll_offset -= 1
-        ev.stop()
-      if ev.key == curses.KEY_DOWN and self.v_scroll_offset < len(self.lines) - self.last_render.rect.h:
-        self.v_scroll_offset += 1
-        ev.stop()
-      if ev.key == curses.KEY_LEFT and self.h_scroll_offset > 0:
-        self.h_scroll_offset = max(0, self.h_scroll_offset - 10)
-        ev.stop()
-      if ev.key == curses.KEY_RIGHT:
-        self.h_scroll_offset += 10
-        ev.stop()
+      v_scrolls = {
+          curses.KEY_UP: -1,
+          ord('k'): -1,
+          curses.KEY_PPAGE: -30,
+          curses.KEY_DOWN: 1,
+          ord('j'): 1,
+          curses.KEY_NPAGE: 30,
+          }
+      h_scrolls = {
+          curses.KEY_LEFT: -10,
+          ord('h'): -10,
+          curses.KEY_RIGHT: 10,
+          ord('k'): 10,
+          }
+
+      if ev.key in v_scrolls:
+        new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
+        if new_v_scroll_offset != self.v_scroll_offset:
+          self.v_scroll_offset = new_v_scroll_offset
+          ev.stop()
+
+      if ev.key in h_scrolls:
+        new_h_scroll_offset = max(0, self.h_scroll_offset + h_scrolls[ev.key])
+        if new_h_scroll_offset != self.h_scroll_offset:
+          self.h_scroll_offset = new_h_scroll_offset
+          ev.stop()
 
 
 #----------------------------------------------------------------------
