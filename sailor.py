@@ -649,12 +649,16 @@ class PreviewPane(Control):
   def on_event(self, ev):
     if ev.type == 'key':
       v_scrolls = {
-          curses.KEY_UP: -1,
-          ord('k'): -1,
+          curses.KEY_UP:     -1,
+          ord('k'):          -1,
           curses.KEY_PPAGE: -30,
-          curses.KEY_DOWN: 1,
-          ord('j'): 1,
-          curses.KEY_NPAGE: 30,
+          curses.KEY_DOWN:    1,
+          ord('j'):           1,
+          curses.KEY_NPAGE:  30,
+          curses.KEY_HOME:  -9999999999,
+          ord('g'):         -9999999999,
+          curses.KEY_END:    9999999999,
+          ord('G'):          9999999999,
           }
       h_scrolls = {
           curses.KEY_LEFT: -10,
