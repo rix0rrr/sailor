@@ -40,6 +40,10 @@ def is_enter(ev):
 def ident(x):
   return x
 
+
+def get_value(x):
+  return x.value if isinstance(x, Option) else x
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -347,6 +351,23 @@ class Option(object):
   def __str__(self):
     return self.caption
 
+  def __eq__(self, other):
+    if not isinstance(other, Option):
+      return self.value == other
+    return self.value == other.value
+
+  def __ne__(self, other):
+    return not self.__eq__(other)
+
+  def __hash__(self):
+    return hash(self.value)
+
+  def __str__(self):
+    return self.caption
+
+  def __repr__(self):
+    return 'Option(%r, %r)' % (self.value, self.caption)
+
 
 class Labeled(Control):
   def __init__(self, label, control, **kwargs):
@@ -377,7 +398,11 @@ class SelectList(Control):
 
   @property
   def value(self):
-    return self.choices[self.index]
+    return get_value(self.choices[self.index])
+
+  @value.setter
+  def value(self, value):
+    self.index = max(0, self.choices.index(value))
 
   def render(self, app):
     lines = self.choices[self.scroll_offset:self.scroll_offset + self.height]
@@ -517,11 +542,19 @@ class Combo(Control):
 
   @property
   def value(self):
-    return self.choices[self.index]
+    return get_value(self.choices[self.index])
+
+  @value.setter
+  def value(self, value):
+    self.index = max(0, self.choices.index(value))
+
+  @property
+  def caption(self):
+    return str(self.choices[self.index])
 
   def render(self, app):
     attr = curses.A_STANDOUT if app.contains_focus(self) else 0
-    self.last_combo = Display(self.value, attr=attr)
+    self.last_combo = Display(self.caption, attr=attr)
     return self.last_combo
 
   def on_event(self, ev):
@@ -990,6 +1023,22 @@ class App(Control):
       if child.id == id:
         return child
     raise RuntimeError('No such control: %s' % id)
+
+
+def get_all(root, ids):
+  ret = {}
+  for id in ids:
+    obj = root.find(id)
+    if hasattr(obj, 'value'):
+      ret[id] = obj.value
+  return ret
+
+
+def set_all(root, dct):
+  for id, value in dct.iteritems():
+    obj = root.find(id)
+    if hasattr(obj, 'value'):
+      obj.value = value
 
 
 def walk(root):
