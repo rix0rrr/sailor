@@ -49,7 +49,8 @@ class View(object):
 
   def display(self, rect):
     self.rect = rect
-    self.disp(rect)
+    if rect.w > 0 and rect.h > 0:
+      self.disp(rect)
 
   def disp(self, rect):
     raise RuntimeError('Not implemented: disp()')
@@ -73,6 +74,21 @@ class Display(View):
     if print_width > 0 and lines:
       for i, line in enumerate(lines):
         rect.screen.addstr(rect.y + i, rect.x, line[:print_width], curses.color_pair(col) | self.attr)
+
+
+class AlignRight(View):
+  def __init__(self, inner, h_margin=2, v_margin=1):
+    self.inner = inner
+    self.h_margin = h_margin
+    self.v_margin = v_margin
+
+  def size(self, rect):
+    return rect.w, rect.h
+
+  def disp(self, rect):
+    w, h = self.inner.size(rect)
+    irect = rect.adj_rect(rect.w - w - self.h_margin, self.v_margin)
+    self.inner.display(irect)
 
 
 class HFill(View):
@@ -211,10 +227,15 @@ class Box(View):
       screen_h = rect.screen.getmaxyx()[0]
       y1 = min(y1, screen_h - 2)
 
-      textpad.rectangle(rect.screen, rect.y, rect.x, y1, x1)
-      if self.caption:
-        self.caption.display(rect.adj_rect(3, 0))
-      self.inner.display(rect.adj_rect(1 + self.x_margin, 1 + self.y_margin, 1 + self.x_margin, 1 + self.y_margin))
+      try:
+        rect.resize(rect_w, rect_h).clear()
+        textpad.rectangle(rect.screen, rect.y, rect.x, y1, x1)
+        if self.caption:
+          self.caption.display(rect.adj_rect(3, 0))
+        self.inner.display(rect.adj_rect(1 + self.x_margin, 1 + self.y_margin, 1 + self.x_margin, 1 + self.y_margin))
+      except curses.error, e:
+        # We should not have sent this invalid draw command...
+        logger.warn(e)
 
 
 #----------------------------------------------------------------------
@@ -451,6 +472,7 @@ class Composite(Control):
                     [curses.KEY_LEFT, SHIFT_TAB],
                     [curses.KEY_RIGHT, curses.ascii.TAB])
 
+
 class Popup(Control):
   def __init__(self, x, y, inner, on_close, caption='', **kwargs):
     super(Popup, self).__init__(**kwargs)
@@ -471,16 +493,18 @@ class Popup(Control):
     return [self.inner]
 
   def show(self, app):
-    app.push_layer(self)
+    self.layer = app.push_layer(self)
 
   def on_event(self, ev):
     if ev.type == 'key':
       if ev.key == curses.ascii.ESC:
         self.on_close(False, self)
-        ev.app.pop_layer()
+        self.layer.remove()
+        ev.stop()
       if is_enter(ev):
         self.on_close(True, self)
-        ev.app.pop_layer()
+        self.layer.remove()
+        ev.stop()
 
 
 class Combo(Control):
@@ -510,6 +534,27 @@ class Combo(Control):
   def on_popup_close(self, success, popup):
     if success:
       self.index = popup.inner.index
+
+
+class Toasty(Control):
+  def __init__(self, text, duration=datetime.timedelta(seconds=3), border=True, **kwargs):
+    super(Toasty, self).__init__(**kwargs)
+    self.text = text
+    self.duration = duration
+    self.border = border
+
+  def render(self, app):
+    inner = Display(self.text, fg=self.fg)
+    if self.border:
+      inner = Box(inner, x_fill=False)
+    return AlignRight(inner)
+
+  def show(self, app):
+    self.layer = app.push_layer(self, modal=False)
+    app.enqueue(self.duration, self._done)
+
+  def _done(self, app):
+    self.layer.remove()
 
 
 class DateCombo(Control):
@@ -702,6 +747,9 @@ class Rect(object):
   def sub_rect(self, dx, dy, w, h):
     return Rect(self.app, self.screen, self.x + dx, self.y + dy, w, h)
 
+  def resize(self, w, h):
+    return self.sub_rect(0, 0, w, h)
+
   def clear(self):
     line = ' ' * self.w
     for j in range(self.y, self.y + self.h):
@@ -735,13 +783,19 @@ def object_tree(root):
 
 
 class Layer(Control):
-  """A modal layer in the app."""
+  """A layer in the app, modal or non-modal.
 
-  def __init__(self, root, app):
+  Non-modal layers stack, but can't be interacted with. The topmost modal layer
+  will be the one receiving input.
+  """
+
+  def __init__(self, root, app, modal, id):
     super(Layer, self).__init__()
     self.root = root
     self.focused = self.root
     self.app = app
+    self.modal = modal
+    self.id = id
 
     self._focus_first()
 
@@ -792,6 +846,18 @@ class TimerHandle(object):
         break
 
 
+class LayerHandle(object):
+  def __init__(self, app, layer_id):
+    self.app = app
+    self.layer_id = layer_id
+
+  def remove(self):
+    for i, layer in enumerate(self.app.layers):
+      if layer.id == self.layer_id:
+        self.app.layers.pop(i)
+        break
+
+
 class App(Control):
   def __init__(self, root):
     super(App, self).__init__()
@@ -800,26 +866,30 @@ class App(Control):
     self.layers = []
     self.color_cache = {}
     self.color_counter = 1
-    self.push_layer(root)
     self.timers = []
-    self.timer_id = 0
+    self.uniq_id = 0
+
+    self.push_layer(root)
 
   def enqueue(self, delta, on_time):
     deadline = datetime.datetime.now() + delta
-    self.timer_id += 1
-    self.timers.append((deadline, on_time, self.timer_id))
+    self.uniq_id += 1
+    self.timers.append((deadline, on_time, self.uniq_id))
     self.timers.sort()
-    return TimerHandle(self, self.timer_id)
+    return TimerHandle(self, self.uniq_id)
 
   @property
   def active_layer(self):
-    return self.layers[-1]
+    # Return the highest modal layer
+    for l in reversed(self.layers):
+      if l.modal:
+        return l
+    assert(False)
 
-  def push_layer(self, control):
-    self.layers.append(Layer(control, self))
-
-  def pop_layer(self):
-    self.layers.pop()
+  def push_layer(self, control, modal=True):
+    self.uniq_id += 1
+    self.layers.append(Layer(control, self, modal, self.uniq_id))
+    return LayerHandle(self, self.uniq_id)
 
   def _all_objects(self):
     return object_tree(self)
