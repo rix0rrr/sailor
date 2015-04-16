@@ -80,6 +80,37 @@ class Display(View):
         rect.screen.addstr(rect.y + i, rect.x, line[:print_width], curses.color_pair(col) | self.attr)
 
 
+class Positioned(View):
+  def __init__(self, inner, x=-1, y=-1):
+    self.inner = inner
+    self.x = x
+    self.y = y
+
+  def size(self, rect):
+    return self.inner.size(rect)
+
+  def disp(self, rect):
+    size = self.size(rect)
+    irect = Rect(rect.app, rect.screen, self.x, self.y, size[0], size[1])
+    irect.clear()
+    self.inner.display(irect)
+
+
+class Centered(View):
+  def __init__(self, inner):
+    self.inner = inner
+
+  def size(self, rect):
+    return rect
+
+  def disp(self, rect):
+    size = self.inner.size(rect)
+    x = (rect.w - size[0]) / 2
+    y = (rect.h - size[1]) / 2
+    irect = rect.sub_rect(x, y, size[0], size[1])
+    self.inner.display(irect)
+
+
 class AlignRight(View):
   def __init__(self, inner, h_margin=2, v_margin=1):
     self.inner = inner
@@ -183,22 +214,6 @@ class Vertical(View):
       v.display(rect)
       dy = v.size(rect)[1] + self.margin
       rect = rect.adj_rect(0, dy)
-
-
-class FloatingWindow(View):
-  def __init__(self, inner, x=-1, y=-1):
-    self.inner = inner
-    self.x = x
-    self.y = y
-
-  def size(self, rect):
-    return self.inner.size(rect)
-
-  def disp(self, rect):
-    size = self.size(rect)
-    irect = Rect(rect.app, rect.screen, self.x, self.y, size[0], size[1])
-    irect.clear()
-    self.inner.display(irect)
 
 
 class Box(View):
@@ -499,7 +514,7 @@ class Composite(Control):
 
 
 class Popup(Control):
-  def __init__(self, x, y, inner, on_close, caption='', **kwargs):
+  def __init__(self, inner, on_close, x=-1, y=-1, caption='', **kwargs):
     super(Popup, self).__init__(**kwargs)
     self.x = x
     self.y = y
@@ -508,11 +523,12 @@ class Popup(Control):
     self.caption = caption
 
   def render(self, app):
-    return FloatingWindow(Box(self.inner.render(app),
-                              x_fill=False,
-                              caption=Display(self.caption)),
-                          x=self.x,
-                          y=self.y)
+    inner = Box(self.inner.render(app),
+                x_fill=False,
+                caption=Display(self.caption))
+    if self.x == -1 or self.y == -1:
+      return Centered(inner)
+    return Positioned(inner, x=self.x, y=self.y)
 
   def children(self):
     return [self.inner]
@@ -530,6 +546,10 @@ class Popup(Control):
         self.on_close(True, self)
         self.layer.remove()
         ev.stop()
+
+
+def EditPopup(app, on_close, value='', caption=''):
+  Popup(Edit(value=value, min_size=30, fg=cyan), caption=caption, on_close=on_close).show(app)
 
 
 class Combo(Control):
@@ -562,7 +582,7 @@ class Combo(Control):
       if is_enter(ev):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
-        Popup(x, y, SelectList(self.choices, self.index), self.on_popup_close).show(ev.app)
+        Popup(SelectList(self.choices, self.index), self.on_popup_close, x=x, y=y).show(ev.app)
 
   def on_popup_close(self, success, popup):
     if success:
@@ -611,7 +631,7 @@ class DateCombo(Control):
       if is_enter(ev):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
-        Popup(x, y, SelectDate(self.value), self.on_popup_close).show(ev.app)
+        Popup(SelectDate(self.value), self.on_popup_close, x=x, y=y).show(ev.app)
 
   def on_popup_close(self, success, popup):
     if success:
@@ -643,21 +663,24 @@ class Time(Composite):
 
 
 class Edit(Control):
-  def __init__(self, value, **kwargs):
+  def __init__(self, value, min_size=0, **kwargs):
     super(Edit, self).__init__(**kwargs)
     self.value = value
+    self.min_size = min_size
     self.can_focus = True
     self.cursor = len(value)
 
   def render(self, app):
     if app.contains_focus(self):
-      hi = self.value[self.cursor] if self.cursor < len(self.value) else ' '
-      return Horizontal([Display(self.value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
+      value = self.value + '_' * max(0, self.min_size - len(self.value))
+      hi = value[self.cursor] if self.cursor < len(value) else ' '
+      return Horizontal([Display(value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
                          Display(hi, fg=self.fg, attr=curses.A_REVERSE),
-                         Display(self.value[self.cursor+1:], fg=self.fg, attr=curses.A_UNDERLINE),
+                         Display(value[self.cursor+1:], fg=self.fg, attr=curses.A_UNDERLINE),
                          ])
     else:
-      return Display(self.value, fg=self.fg)
+      return Horizontal([Display(self.value, fg=self.fg),
+                         Display(' ' * max(0, self.min_size - len(self.value)))])
 
   def on_event(self, ev):
     if ev.type == 'key':
@@ -680,8 +703,6 @@ class Edit(Control):
       if ev.key == curses.KEY_RIGHT and self.cursor < len(self.value):
         self.cursor += 1
         ev.stop()
-      if is_enter(ev):
-        ev.key = curses.ascii.TAB
       if 32 <= ev.key < 127:
         self.value = self.value[:self.cursor] + chr(ev.key) + self.value[self.cursor:]
         self.cursor += 1
@@ -714,8 +735,10 @@ class PreviewPane(Control):
     self.can_focus = True
     self.v_scroll_offset = 0
     self.h_scroll_offset = 0
+    self.app = None
 
   def render(self, app):
+    self.app = app
     attr = 0
     if app.contains_focus(self):
       attr = curses.A_BOLD
@@ -756,6 +779,21 @@ class PreviewPane(Control):
         if new_h_scroll_offset != self.h_scroll_offset:
           self.h_scroll_offset = new_h_scroll_offset
           ev.stop()
+
+      if ev.key == ord('s'):
+        EditPopup(ev.app, self._save_contents, value='report.log', caption='Save to file')
+
+  def _save_contents(self, accept, box):
+    if not accept:
+      return
+    filename = box.inner.value
+
+    try:
+      with file(filename, 'w') as f:
+        f.write('\n'.join(self.lines))
+      Toasty('%s saved' % filename).show(self.app)
+    except Exception, e:
+      Toasty(str(e), duration=datetime.timedelta(seconds=5)).show(self.app)
 
 
 #----------------------------------------------------------------------
@@ -920,6 +958,7 @@ class App(Control):
     assert(False)
 
   def push_layer(self, control, modal=True):
+    assert(isinstance(control, Control))
     self.uniq_id += 1
     self.layers.append(Layer(control, self, modal, self.uniq_id))
     return LayerHandle(self, self.uniq_id)
