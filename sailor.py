@@ -780,6 +780,18 @@ class Layer(Control):
     return self.root.render(app)
 
 
+class TimerHandle(object):
+  def __init__(self, app, timer_id):
+    self.app = app
+    self.timer_id = timer_id
+
+  def cancel(self):
+    for i, (_, _, timer_id) in enumerate(self.app.timers):
+      if timer_id == self.timer_id:
+        self.app.timers.pop(i)
+        break
+
+
 class App(Control):
   def __init__(self, root):
     super(App, self).__init__()
@@ -790,11 +802,14 @@ class App(Control):
     self.color_counter = 1
     self.push_layer(root)
     self.timers = []
+    self.timer_id = 0
 
   def enqueue(self, delta, on_time):
     deadline = datetime.datetime.now() + delta
-    self.timers.append((deadline, on_time))
+    self.timer_id += 1
+    self.timers.append((deadline, on_time, self.timer_id))
     self.timers.sort()
+    return TimerHandle(self, self.timer_id)
 
   @property
   def active_layer(self):
@@ -850,7 +865,7 @@ class App(Control):
   def fire_timers(self):
     now = datetime.datetime.now()
     while self.timers and self.timers[0][0] <= now:
-      _, on_time = self.timers.pop(0)
+      _, on_time, _ = self.timers.pop(0)
       on_time(self)
 
   def run(self, screen):
@@ -859,9 +874,13 @@ class App(Control):
     while not self.exit:
       self.update()
       self.screen.timeout(self.ch_wait_time)
-      c = self.screen.getch()
-      if c != -1:
-        self.dispatch_event(Event('key', c, self.active_layer.focused, self))
+      try:
+        c = self.screen.getch()
+        if c != -1:
+          self.dispatch_event(Event('key', c, self.active_layer.focused, self))
+      except KeyboardInterrupt:
+        # Just another kind of event
+        self.dispatch_event(Event('break', None, self.active_layer.focused, self))
       self.fire_timers()
 
   def update(self):
@@ -881,15 +900,20 @@ class App(Control):
       tgt = self.get_parent(tgt)
 
   def on_event(self, ev):
-    if ev.key in [curses.ascii.ESC]:
-      self.exit = True
-      ev.stop()
+    if ev.type == 'break':
+      # If the break got here, re-raise it
+      raise KeyboardInterrupt()
 
-    # If we got here with focus-shifting, set focus back to the first control
-    if ev.key in [curses.KEY_DOWN, curses.ascii.TAB]:
-      self.active_layer._focus_first()
-    if ev.key in [curses.KEY_UP, SHIFT_TAB]:
-      self.active_layer._focus_last()
+    if ev.type == 'key':
+      if ev.key in [curses.ascii.ESC]:
+        self.exit = True
+        ev.stop()
+
+      # If we got here with focus-shifting, set focus back to the first control
+      if ev.key in [curses.KEY_DOWN, curses.ascii.TAB]:
+        self.active_layer._focus_first()
+      if ev.key in [curses.KEY_UP, SHIFT_TAB]:
+        self.active_layer._focus_last()
 
   def find(self, id):
     for parent, child in object_tree(self):
