@@ -10,10 +10,15 @@ import itertools
 logger = logging.getLogger('sailor')
 
 CTRL_A = 1
-CTRL_E = 5
+CTRL_E = ord('e') - ord('a') + 1
+CTRL_J = ord('j') - ord('a') + 1
+CTRL_K = ord('k') - ord('a') + 1
+CTRL_N = ord('n') - ord('a') + 1
+CTRL_P = ord('p') - ord('a') + 1
+
 MAC_BACKSPACE = 127   # Don't feel like finding out why
-ALT_ENTER = 10 # Don't feel like finding out why
 SHIFT_TAB = 353
+CR = 13  # Or Ctrl-M, so don't use that
 
 black = curses.COLOR_BLACK
 red = curses.COLOR_RED
@@ -34,7 +39,7 @@ def reduce_esc_delay():
 
 
 def is_enter(ev):
-  return ev.key in [curses.KEY_ENTER, ALT_ENTER]
+  return ev.key in [curses.KEY_ENTER, CR]
 
 
 def ident(x):
@@ -77,7 +82,8 @@ class Display(View):
     lines = self.lines[:rect.h]
     if print_width > 0 and lines:
       for i, line in enumerate(lines):
-        rect.screen.addstr(rect.y + i, rect.x, line[:print_width], curses.color_pair(col) | self.attr)
+        padding = ' ' * min(print_width, self.min_width - len(line))
+        rect.screen.addstr(rect.y + i, rect.x, line[:print_width] + padding, curses.color_pair(col) | self.attr)
 
 
 class Positioned(View):
@@ -91,7 +97,9 @@ class Positioned(View):
 
   def disp(self, rect):
     size = self.size(rect)
-    irect = Rect(rect.app, rect.screen, self.x, self.y, size[0], size[1])
+
+    x = max(0, min(self.x, rect.w - size[0]))
+    irect = Rect(rect.app, rect.screen, x, self.y, size[0], size[1])
     irect.clear()
     self.inner.display(irect)
 
@@ -217,9 +225,10 @@ class Vertical(View):
 
 
 class Box(View):
-  def __init__(self, inner, caption=None, x_margin=1, y_margin=0, x_fill=True, y_fill=False):
+  def __init__(self, inner, caption=None, underscript=None, x_margin=1, y_margin=0, x_fill=True, y_fill=False):
     self.inner = inner
     self.caption = caption
+    self.underscript = underscript
     self.x_margin = x_margin
     self.y_margin = y_margin
     self.x_fill = x_fill
@@ -251,6 +260,9 @@ class Box(View):
         textpad.rectangle(rect.screen, rect.y, rect.x, y1, x1)
         if self.caption:
           self.caption.display(rect.adj_rect(3, 0))
+        if self.underscript:
+          s = self.underscript.size(rect)
+          self.underscript.display(rect.adj_rect(max(3, rect_w - s[0] - 3), rect_h - 1))
         self.inner.display(rect.adj_rect(1 + self.x_margin, 1 + self.y_margin, 1 + self.x_margin, 1 + self.y_margin))
       except curses.error, e:
         # We should not have sent this invalid draw command...
@@ -402,7 +414,7 @@ class Labeled(Control):
 
 
 class SelectList(Control):
-  def __init__(self, choices, index, width=30, height=10, **kwargs):
+  def __init__(self, choices, index, width=30, height=10, show_captions_at=0, **kwargs):
     super(SelectList, self).__init__(**kwargs)
     self.choices = choices
     self.index = index
@@ -410,6 +422,11 @@ class SelectList(Control):
     self.height = height
     self.scroll_offset = max(0, min(self.index, len(self.choices) - height))
     self.can_focus = True
+    self.show_captions_at = show_captions_at
+
+  def adjust(self, d):
+    if len(self.choices) > 1:
+      self.index = (self.index + d + len(self.choices)) % len(self.choices)
 
   @property
   def value(self):
@@ -419,14 +436,25 @@ class SelectList(Control):
   def value(self, value):
     self.index = max(0, self.choices.index(value))
 
+  def _render_line(self, line, selected):
+    attr = curses.A_STANDOUT if selected else 0
+    if self.show_captions_at and isinstance(line, Option):
+      rem = self.width - self.show_captions_at
+      return Horizontal([
+          Display(str(line.value)[:self.show_captions_at], min_width=self.show_captions_at, attr=attr),
+          Display(str(line.caption)[:rem], min_width=rem, attr=attr, fg=cyan if not selected else white)
+          ])
+    return Display(line, min_width=self.width, attr=attr)
+
   def render(self, app):
     lines = self.choices[self.scroll_offset:self.scroll_offset + self.height]
     lines.extend([''] * (self.height - len(lines)))
     i_hi = self.index - self.scroll_offset
 
-    vert = Vertical([Display(l, min_width=self.width) for l in lines[:i_hi]] +
-                    [Display(lines[i_hi], min_width=self.width, attr=curses.A_STANDOUT)] +
-                    [Display(l, min_width=self.width) for l in lines[i_hi+1:]])
+    vert = Vertical([self._render_line(l, False) for l in lines[:i_hi]] +
+                    [self._render_line(lines[i_hi], True)] +
+                    [self._render_line(l, False) for l in lines[i_hi+1:]])
+
     # FIXME: Scroll bar
     return vert
 
@@ -519,18 +547,20 @@ class Composite(Control):
 
 
 class Popup(Control):
-  def __init__(self, inner, on_close, x=-1, y=-1, caption='', **kwargs):
+  def __init__(self, inner, on_close, x=-1, y=-1, caption='', underscript='', **kwargs):
     super(Popup, self).__init__(**kwargs)
     self.x = x
     self.y = y
     self.inner = inner
     self.on_close = on_close
     self.caption = caption
+    self.underscript = underscript
 
   def render(self, app):
     inner = Box(self.inner.render(app),
                 x_fill=False,
-                caption=Display(self.caption))
+                caption=Display(self.caption),
+                underscript=Display(self.underscript))
     if self.x == -1 or self.y == -1:
       return Centered(inner)
     return Positioned(inner, x=self.x, y=self.y)
@@ -560,21 +590,38 @@ def EditPopup(app, on_close, value='', caption=''):
 class Combo(Control):
   def __init__(self, choices, index=0, **kwargs):
     super(Combo, self).__init__(**kwargs)
-    self.choices = choices
+    self._choices = choices
     self.index = index
     self.can_focus = True
     self.last_combo = None
 
+  def sanitize_index(self):
+    self.index = min(max(0, self.index), len(self.choices) - 1)
+    return 0 <= self.index < len(self.choices)
+
+  @property
+  def choices(self):
+    if callable(self._choices):
+      return self._choices()
+    return self._choices
+
   @property
   def value(self):
+    if not self.sanitize_index():
+      return None
     return get_value(self.choices[self.index])
 
   @value.setter
   def value(self, value):
-    self.index = max(0, self.choices.index(value))
+    try:
+      self.index = max(0, self.choices.index(value))
+    except ValueError:
+      self.index = 0
 
   @property
   def caption(self):
+    if not self.sanitize_index():
+      return '-unset-'
     return str(self.choices[self.index])
 
   def render(self, app):
@@ -679,13 +726,14 @@ class Edit(Control):
     if app.contains_focus(self):
       value = self.value + '_' * max(0, self.min_size - len(self.value))
       hi = value[self.cursor] if self.cursor < len(value) else ' '
-      return Horizontal([Display(value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
+      self.rendered = Horizontal([Display(value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
                          Display(hi, fg=self.fg, attr=curses.A_REVERSE),
                          Display(value[self.cursor+1:], fg=self.fg, attr=curses.A_UNDERLINE),
                          ])
     else:
-      return Horizontal([Display(self.value, fg=self.fg),
+      self.rendered = Horizontal([Display(self.value, fg=self.fg),
                          Display(' ' * max(0, self.min_size - len(self.value)))])
+    return self.rendered
 
   def on_event(self, ev):
     if ev.type == 'key':
@@ -712,6 +760,54 @@ class Edit(Control):
         self.value = self.value[:self.cursor] + chr(ev.key) + self.value[self.cursor:]
         self.cursor += 1
         ev.stop()
+
+
+class AutoCompleteEdit(Edit):
+  def __init__(self, value, complete_fn, min_size=0, **kwargs):
+    super(AutoCompleteEdit, self).__init__(value=value, min_size=min_size, **kwargs)
+    self.complete_fn = complete_fn
+    self.popup_visible = False
+    self.select = SelectList([], 0, width=60, show_captions_at=20)
+    self.popup = Popup(self.select, on_close=self.on_close, underscript='( ^N, ^P to move, Enter to select )')
+    self.layer = None
+
+  def on_close(self):
+    pass
+
+  def show_popup(self, app, visible):
+    if visible and not self.layer:
+      self.popup.x = self.rendered.rect.x
+      self.popup.y = self.rendered.rect.y + 1
+      self.layer = app.push_layer(self.popup, modal=False)
+    if not visible and self.layer:
+      self.layer.remove()
+      self.layer = None
+
+  def set_autocomplete_options(self, options):
+    self.select.choices = options
+
+  def on_event(self, ev):
+    super(AutoCompleteEdit, self).on_event(ev)
+
+    if ev.type == 'key' and self.layer:
+      if ev.key in [CTRL_J, CTRL_N]:
+        self.select.adjust(1)
+        ev.stop()
+      if ev.key in [CTRL_K, CTRL_P]:
+        self.select.adjust(-1)
+        ev.stop()
+      if is_enter(ev):
+        self.value = self.select.value
+        self.cursor = len(self.value)
+        self.show_popup(ev.app, False)
+        ev.stop()
+    else:
+      if ev.app.contains_focus(self):
+        self.set_autocomplete_options(self.complete_fn(self.value))
+        self.show_popup(ev.app, len(self.select.choices) > 1)
+      if ev.type == 'blur':
+        self.show_popup(ev.app, False)
+
 
 
 class Button(Control):
@@ -743,7 +839,7 @@ class PreviewPane(Control):
     self.app = None
 
   def render(self, app):
-    self.app = app
+    self.app = app  # FIXME: That's nasty
     attr = 0
     if app.contains_focus(self):
       attr = curses.A_BOLD
@@ -1016,6 +1112,7 @@ class App(Control):
       on_time(self)
 
   def run(self, screen):
+    curses.nonl()  # We need Ctrl-J!
     curses.curs_set(0)
     self.screen = screen
     while not self.exit:
