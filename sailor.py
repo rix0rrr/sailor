@@ -428,6 +428,10 @@ class SelectList(Control):
     if len(self.choices) > 1:
       self.index = (self.index + d + len(self.choices)) % len(self.choices)
 
+  def sanitize_index(self):
+    self.index = min(max(0, self.index), len(self.choices) - 1)
+    return 0 <= self.index < len(self.choices)
+
   @property
   def value(self):
     return get_value(self.choices[self.index])
@@ -447,13 +451,12 @@ class SelectList(Control):
     return Display(line, min_width=self.width, attr=attr)
 
   def render(self, app):
+    self.sanitize_index()
+
     lines = self.choices[self.scroll_offset:self.scroll_offset + self.height]
     lines.extend([''] * (self.height - len(lines)))
-    i_hi = self.index - self.scroll_offset
 
-    vert = Vertical([self._render_line(l, False) for l in lines[:i_hi]] +
-                    [self._render_line(lines[i_hi], True)] +
-                    [self._render_line(l, False) for l in lines[i_hi+1:]])
+    vert = Vertical([self._render_line(l, i + self.scroll_offset == self.index) for i, l in enumerate(lines)])
 
     # FIXME: Scroll bar
     return vert
@@ -717,9 +720,18 @@ class Time(Composite):
 class Edit(Control):
   def __init__(self, value, min_size=0, **kwargs):
     super(Edit, self).__init__(**kwargs)
-    self.value = value
+    self._value = value
     self.min_size = min_size
     self.can_focus = True
+    self.cursor = len(value)
+
+  @property
+  def value(self):
+    return self._value
+
+  @value.setter
+  def value(self, value):
+    self._value = value
     self.cursor = len(value)
 
   def render(self, app):
@@ -741,23 +753,23 @@ class Edit(Control):
         self.cursor = 0
         ev.stop()
       if ev.key in [CTRL_E, curses.KEY_END]:
-        self.cursor = len(self.value)
+        self.cursor = len(self._value)
         ev.stop()
       if ev.key in [curses.KEY_BACKSPACE, MAC_BACKSPACE]:
-        self.value = self.value[:self.cursor-1] + self.value[self.cursor:]
+        self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
         self.cursor = max(0, self.cursor - 1)
         ev.stop()
       if ev.key == curses.ascii.DEL:
-        self.value = self.value[:self.cursor] + self.value[self.cursor+1:]
+        self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
         ev.stop()
       if ev.key == curses.KEY_LEFT and self.cursor > 0:
         self.cursor -= 1
         ev.stop()
-      if ev.key == curses.KEY_RIGHT and self.cursor < len(self.value):
+      if ev.key == curses.KEY_RIGHT and self.cursor < len(self._value):
         self.cursor += 1
         ev.stop()
       if 32 <= ev.key < 127:
-        self.value = self.value[:self.cursor] + chr(ev.key) + self.value[self.cursor:]
+        self._value = self._value[:self.cursor] + chr(ev.key) + self._value[self.cursor:]
         self.cursor += 1
         ev.stop()
 
@@ -789,6 +801,12 @@ class AutoCompleteEdit(Edit):
   def on_event(self, ev):
     super(AutoCompleteEdit, self).on_event(ev)
 
+    if ev.app.contains_focus(self):
+      self.set_autocomplete_options(self.complete_fn(self.value))
+      self.show_popup(ev.app, len(self.select.choices) > 1)
+    if ev.type == 'blur':
+      self.show_popup(ev.app, False)
+
     if ev.type == 'key' and self.layer:
       if ev.key in [CTRL_J, CTRL_N]:
         self.select.adjust(1)
@@ -798,16 +816,8 @@ class AutoCompleteEdit(Edit):
         ev.stop()
       if is_enter(ev):
         self.value = self.select.value
-        self.cursor = len(self.value)
         self.show_popup(ev.app, False)
         ev.stop()
-    else:
-      if ev.app.contains_focus(self):
-        self.set_autocomplete_options(self.complete_fn(self.value))
-        self.show_popup(ev.app, len(self.select.choices) > 1)
-      if ev.type == 'blur':
-        self.show_popup(ev.app, False)
-
 
 
 class Button(Control):
