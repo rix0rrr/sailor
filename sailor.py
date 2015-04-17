@@ -803,7 +803,9 @@ class AutoCompleteEdit(Edit):
 
     if ev.app.contains_focus(self):
       self.set_autocomplete_options(self.complete_fn(self.value))
-      self.show_popup(ev.app, len(self.select.choices) > 1)
+      interesting = (len(self.select.choices) > 1
+                     or (len(self.select.choices) == 1) and self.select.choices[0] != self.value)
+      self.show_popup(ev.app, interesting)
     if ev.type == 'blur':
       self.show_popup(ev.app, False)
 
