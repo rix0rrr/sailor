@@ -306,6 +306,23 @@ class Control(object):
         return child
     raise RuntimeError('No such control: %s' % id)
 
+  def _focus_order(self, key):
+    return (reversed
+            if key in [curses.KEY_UP, curses.KEY_LEFT, SHIFT_TAB] else
+            ident)
+
+  def enter_focus(self, key, app):
+    if self.can_focus:
+      app.layer(self).focus(self)
+      return True
+
+    order = self._focus_order(key)
+
+    for child in order(self.children()):
+      if child.enter_focus(key, app):
+        return True
+    return False
+
 
 class Text(Control):
   def __init__(self, value, **kwargs):
@@ -333,7 +350,7 @@ def propagate_focus(ev, controls, layer, keys_back, keys_fwd):
       i = controls.index(current)
       while 0 <= i < len(controls) and ev.propagating:
         i += -1 if back else 1
-        if 0 <= i < len(controls) and layer.focus(controls[i], backwards=back):
+        if 0 <= i < len(controls) and controls[i].enter_focus(ev.key, ev.app):
           ev.stop()
           return True
   return False
@@ -547,6 +564,12 @@ class Composite(Control):
     propagate_focus(ev, self.controls, ev.app.layer(self),
                     [curses.KEY_LEFT, SHIFT_TAB],
                     [curses.KEY_RIGHT, curses.ascii.TAB])
+
+  def _focus_order(self, key):
+    """If we enter the control from the bottom, still focus the first element."""
+    return (reversed
+            if key in [curses.KEY_LEFT, SHIFT_TAB] else
+            ident)
 
 
 class Popup(Control):
@@ -997,19 +1020,11 @@ class Layer(Control):
         self.focus(child)
         return
 
-  def focus(self, ctrl, backwards=False):
-    if ctrl.can_focus:
-      self.focused.on_event(Event('blur', None, self.focused, self.app))
-      self.focused = ctrl
-      self.focused.on_event(Event('focus', None, self.focused, self.app))
-      return True
-
-    order = reversed if backwards else ident
-
-    for child in order(ctrl.children()):
-      if self.focus(child, backwards=backwards):
-        return True
-    return False
+  def focus(self, ctrl):
+    assert(ctrl.can_focus)
+    self.focused.on_event(Event('blur', None, self.focused, self.app))
+    self.focused = ctrl
+    self.focused.on_event(Event('focus', None, self.focused, self.app))
 
   def children(self):
     return [self.root]
