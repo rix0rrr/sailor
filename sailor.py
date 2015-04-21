@@ -266,6 +266,10 @@ class Box(View):
         if self.underscript:
           s = self.underscript.size(rect)
           self.underscript.display(rect.adj_rect(max(3, rect_w - s[0] - 3), rect_h - 1))
+      except curses.error, e:
+        # We should not have sent this invalid draw command...
+        logger.warn(e)
+      try:
         self.inner.display(rect.adj_rect(1 + self.x_margin, 1 + self.y_margin, 1 + self.x_margin, 1 + self.y_margin))
       except curses.error, e:
         # We should not have sent this invalid draw command...
@@ -447,6 +451,8 @@ class SelectList(Control):
   def adjust(self, d):
     if len(self.choices) > 1:
       self.index = (self.index + d + len(self.choices)) % len(self.choices)
+      self.scroll_offset = min(self.scroll_offset, self.index)
+      self.scroll_offset = max(self.scroll_offset, self.index - self.height + 1)
 
   def sanitize_index(self):
     self.index = min(max(0, self.index), len(self.choices) - 1)
@@ -805,7 +811,7 @@ class AutoCompleteEdit(Edit):
     super(AutoCompleteEdit, self).__init__(value=value, min_size=min_size, **kwargs)
     self.complete_fn = complete_fn
     self.popup_visible = False
-    self.select = SelectList([], 0, width=60, show_captions_at=20)
+    self.select = SelectList([], 0, width=70, show_captions_at=30)
     self.popup = Popup(self.select, on_close=self.on_close, underscript='( ^N, ^P to move, Enter to select )')
     self.layer = None
 
