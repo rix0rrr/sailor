@@ -83,7 +83,10 @@ class Display(View):
     if print_width > 0 and lines:
       for i, line in enumerate(lines):
         padding = ' ' * min(print_width, self.min_width - len(line))
-        rect.screen.addstr(rect.y + i, rect.x, line[:print_width] + padding, curses.color_pair(col) | self.attr)
+        try:
+          rect.screen.addstr(rect.y + i, rect.x, line[:print_width] + padding, curses.color_pair(col) | self.attr)
+        except curses.error, e:
+          logger.warn(str(e))
 
 
 class Positioned(View):
