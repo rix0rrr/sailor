@@ -1213,9 +1213,12 @@ def get_all(root, ids):
 
 def set_all(root, dct):
   for id, value in dct.iteritems():
-    obj = root.find(id)
-    if hasattr(obj, 'value'):
-      obj.value = value
+    try:
+      obj = root.find(id)
+      if hasattr(obj, 'value'):
+        obj.value = value
+    except RuntimeError:
+      pass
 
 
 def walk(root):
