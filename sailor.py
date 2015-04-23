@@ -3,9 +3,10 @@ import curses
 import curses.ascii
 from curses import textpad
 import datetime
+import itertools
 import logging
 import os
-import itertools
+import string
 
 logger = logging.getLogger('sailor')
 
@@ -48,6 +49,7 @@ def ident(x):
 
 def get_value(x):
   return x.value if isinstance(x, Option) else x
+
 
 #----------------------------------------------------------------------
 #  VIEW classes
@@ -165,7 +167,7 @@ class Horizontal(View):
 
     widths = [s[0] for s in sizes]
     heights = [s[1] for s in sizes]
-    return sum(widths) + max(len(self.views) - 1, 0) * self.margin, max(heights)
+    return sum(widths) + max(len(self.views) - 1, 0) * self.margin, max(heights + [0])
 
   def disp(self, rect):
     for v in self.views:
@@ -750,12 +752,20 @@ class Time(Composite):
 
 
 class Edit(Control):
-  def __init__(self, value, min_size=0, **kwargs):
+  """Standard text edit control.
+
+  Arguments:
+    highlight, fn: a syntax highlighting function. Will be given a string, and
+      should return a list of curses (color, attributes), one for every
+      character.
+  """
+  def __init__(self, value, min_size=0, highlight=None, **kwargs):
     super(Edit, self).__init__(**kwargs)
     self._value = value
     self.min_size = min_size
     self.can_focus = True
     self.cursor = len(value)
+    self.highlight = highlight
 
   @property
   def value(self):
@@ -767,16 +777,28 @@ class Edit(Control):
     self.cursor = len(value)
 
   def render(self, app):
-    if app.contains_focus(self):
-      value = self.value + '_' * max(0, self.min_size - len(self.value))
-      hi = value[self.cursor] if self.cursor < len(value) else ' '
-      self.rendered = Horizontal([Display(value[:self.cursor], fg=self.fg, attr=curses.A_UNDERLINE),
-                         Display(hi, fg=self.fg, attr=curses.A_REVERSE),
-                         Display(value[self.cursor+1:], fg=self.fg, attr=curses.A_UNDERLINE),
-                         ])
+    focused = app.contains_focus(self)
+
+    chars = list(self.value)
+    if self.highlight:
+      # Custom highlighting
+      attrs = self.highlight(chars)
     else:
-      self.rendered = Horizontal([Display(self.value, fg=self.fg),
-                         Display(' ' * max(0, self.min_size - len(self.value)))])
+      # Default highlighting, foreground color
+      attrs = [(self.fg, 0) for c in chars]
+
+    # Make the field longer for the cursor or display purposes
+    ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(chars))
+    chars.extend(' ' * ext_len)
+    attrs.extend((self.fg, 0) for i in range(ext_len))
+
+    # If we have focus, and an underline and a highlight
+    if focused:
+      attrs = [(col, a | curses.A_UNDERLINE) for col, a in attrs]
+      attrs[self.cursor] = (attrs[self.cursor][0], attrs[self.cursor][0] | curses.A_REVERSE)
+
+    # Render that momma
+    self.rendered = Horizontal([Display(c, fg=col, attr=att) for c, (col, att) in zip(chars, attrs)])
     return self.rendered
 
   def on_event(self, ev):
@@ -830,13 +852,33 @@ class AutoCompleteEdit(Edit):
   def set_autocomplete_options(self, options):
     self.select.choices = options
 
+  @property
+  def cursor_word(self):
+    """Return the word under the cursor.
+
+    Returns (offset, string).
+    """
+    i = min(self.cursor, len(self.value) - 1)  # Inclusive
+    while (i > 0 and self.value[i] in string.letters and
+           self.value[i-1] in string.letters):
+      i -= 1
+    j = i + 1  # Exclusive
+    while (j < len(self.value) and self.value[j] in string.letters):
+      j += 1
+    return (i, self.value[i:j])
+
+  def replace_cursor_word(self, word):
+    i, current = self.cursor_word
+    self.value = self.value[:i] + word + self.value[i+len(current):]
+
   def on_event(self, ev):
     super(AutoCompleteEdit, self).on_event(ev)
 
     if ev.app.contains_focus(self):
-      self.set_autocomplete_options(self.complete_fn(self.value))
+      _, word = self.cursor_word
+      self.set_autocomplete_options(self.complete_fn(word))
       interesting = (len(self.select.choices) > 1
-                     or (len(self.select.choices) == 1) and self.select.choices[0] != self.value)
+                     or (len(self.select.choices) == 1) and self.select.choices[0] != word)
       self.show_popup(ev.app, interesting)
     if ev.type == 'blur':
       self.show_popup(ev.app, False)
@@ -849,7 +891,7 @@ class AutoCompleteEdit(Edit):
         self.select.adjust(-1)
         ev.stop()
       if is_enter(ev):
-        self.value = self.select.value
+        self.replace_cursor_word(self.select.value)
         self.show_popup(ev.app, False)
         ev.stop()
 
