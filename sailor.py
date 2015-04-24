@@ -810,29 +810,30 @@ class Edit(Control):
     ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(self.value))
     colorized += ' ' * ext_len
 
-    # If we have focus, and an underline and a highlight
+    # Render that momma
+    self.rendered = Horizontal(self._render_colorized(colorized, focused))
+    return self.rendered
+
+  def _render_colorized(self, colorized, focused):
+    """Split a colorized string into Display() slices."""
     base_attr = 0
     if focused:
       base_attr = curses.A_UNDERLINE
 
-    # Render that momma
-    self.rendered = Horizontal(self._render_colorized(colorized, base_attr))
-    return self.rendered
-
-  def _render_colorized(self, colorized, base_attr):
-    """Split a colorized string into Display() slices."""
     frag_list = []
     parts = colorized.split('\0')
     chars_so_far = 0
     for i in range(0, len(parts), 2):
       # i is regular, i+1 is colorized (if it's there)
       frag_list.append(Display(parts[i], fg=self.fg, attr=base_attr))
-      chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+      if focused:
+        chars_so_far = self._inject_cursor(chars_so_far, frag_list)
 
       if i + 1 < len(parts):
         color, attr, text = parts[i+1].split('\1')
         frag_list.append(Display(text, fg=int(color), attr=base_attr+int(attr)))
-        chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+        if focused:
+          chars_so_far = self._inject_cursor(chars_so_far, frag_list)
 
     return frag_list
 
@@ -878,13 +879,14 @@ class Edit(Control):
 
 
 class AutoCompleteEdit(Edit):
-  def __init__(self, value, complete_fn, min_size=0, **kwargs):
+  def __init__(self, value, complete_fn, min_size=0, letters=string.letters, **kwargs):
     super(AutoCompleteEdit, self).__init__(value=value, min_size=min_size, **kwargs)
     self.complete_fn = complete_fn
     self.popup_visible = False
     self.select = SelectList([], 0, width=70, show_captions_at=30)
     self.popup = Popup(self.select, on_close=self.on_close, underscript='( ^N, ^P to move, Enter to select )')
     self.layer = None
+    self.letters = letters
 
   def on_close(self):
     pass
@@ -908,11 +910,11 @@ class AutoCompleteEdit(Edit):
     Returns (offset, string).
     """
     i = min(self.cursor, len(self.value) - 1)  # Inclusive
-    while (i > 0 and self.value[i] in string.letters and
-           self.value[i-1] in string.letters):
+    while (i > 0 and self.value[i] in self.letters and
+           self.value[i-1] in self.letters):
       i -= 1
     j = i + 1  # Exclusive
-    while (j < len(self.value) and self.value[j] in string.letters):
+    while (j < len(self.value) and self.value[j] in self.letters):
       j += 1
     return (i, self.value[i:j])
 
