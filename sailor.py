@@ -690,6 +690,7 @@ class Combo(Control):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectList(self.choices, self.index), self.on_popup_close, x=x, y=y).show(ev.app)
+        ev.stop()
 
   def on_popup_close(self, success, popup):
     if success:
