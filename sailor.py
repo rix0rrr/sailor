@@ -51,6 +51,20 @@ def get_value(x):
   return x.value if isinstance(x, Option) else x
 
 
+def flatten(listOfLists):
+    return itertools.chain.from_iterable(listOfLists)
+
+
+class Colorized(object):
+  def __init__(self, text, color, attr=0):
+    self.text = text
+    self.color = color
+    self.attr = attr
+
+  def __str__(self):
+    return '\0' + str(self.color) + '\1' + str(self.attr) + '\1' + str(self.text) + '\0'
+
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -74,6 +88,10 @@ class Display(View):
     self.bg = bg
     self.min_width = min_width
     self.attr = attr
+
+  @property
+  def text(self):
+    return '\n'.join(self.lines)
 
   def size(self, rect):
     return max(self.min_width, max(len(l) for l in self.lines)), len(self.lines)
@@ -779,27 +797,56 @@ class Edit(Control):
   def render(self, app):
     focused = app.contains_focus(self)
 
-    chars = list(self.value)
+    # Default highlighting, foreground color
+    colorized = self.value
     if self.highlight:
       # Custom highlighting
-      attrs = self.highlight(chars)
-    else:
-      # Default highlighting, foreground color
-      attrs = [(self.fg, 0) for c in chars]
+      try:
+        colorized = self.highlight(self.value)
+      except Exception, e:
+        logger.error(str(e))
 
     # Make the field longer for the cursor or display purposes
-    ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(chars))
-    chars.extend(' ' * ext_len)
-    attrs.extend((self.fg, 0) for i in range(ext_len))
+    ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(self.value))
+    colorized += ' ' * ext_len
 
     # If we have focus, and an underline and a highlight
+    base_attr = 0
     if focused:
-      attrs = [(col, a | curses.A_UNDERLINE) for col, a in attrs]
-      attrs[self.cursor] = (attrs[self.cursor][0], attrs[self.cursor][0] | curses.A_REVERSE)
+      base_attr = curses.A_UNDERLINE
 
     # Render that momma
-    self.rendered = Horizontal([Display(c, fg=col, attr=att) for c, (col, att) in zip(chars, attrs)])
+    self.rendered = Horizontal(self._render_colorized(colorized, base_attr))
     return self.rendered
+
+  def _render_colorized(self, colorized, base_attr):
+    """Split a colorized string into Display() slices."""
+    frag_list = []
+    parts = colorized.split('\0')
+    chars_so_far = 0
+    for i in range(0, len(parts), 2):
+      # i is regular, i+1 is colorized (if it's there)
+      frag_list.append(Display(parts[i], fg=self.fg, attr=base_attr))
+      chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+
+      if i + 1 < len(parts):
+        color, attr, text = parts[i+1].split('\1')
+        frag_list.append(Display(text, fg=int(color), attr=base_attr+int(attr)))
+        chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+
+    return frag_list
+
+  def _inject_cursor(self, chars_so_far, frag_list):
+    """If the cursor falls into this fragment, highlight it."""
+    last = frag_list[-1]
+    if chars_so_far <= self.cursor < chars_so_far + len(last.text):
+      offset = self.cursor - chars_so_far
+      pre, hi, post = last.text[:offset], last.text[offset], last.text[offset+1:]
+      frag_list[-1:] = [Display(pre, fg=last.fg, attr=last.attr),
+                        Display(hi, fg=last.fg, attr=last.attr + curses.A_STANDOUT),
+                        Display(post, fg=last.fg, attr=last.attr)]
+
+    return chars_so_far + len(last.text)
 
   def on_event(self, ev):
     if ev.type == 'key':
@@ -810,11 +857,13 @@ class Edit(Control):
         self.cursor = len(self._value)
         ev.stop()
       if ev.key in [curses.KEY_BACKSPACE, MAC_BACKSPACE]:
-        self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
-        self.cursor = max(0, self.cursor - 1)
+        if self.cursor > 0:
+          self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
+          self.cursor = max(0, self.cursor - 1)
         ev.stop()
-      if ev.key == curses.ascii.DEL:
-        self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
+      elif ev.key == curses.ascii.DEL:
+        if self.cursor < len(self._value) - 1:
+          self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
         ev.stop()
       if ev.key == curses.KEY_LEFT and self.cursor > 0:
         self.cursor -= 1
