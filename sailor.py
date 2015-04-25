@@ -1043,7 +1043,7 @@ class PreviewPane(Control):
 
       if ev.key == ord('s'):
         EditPopup(ev.app, self._save_contents, value='report.log', caption='Save to file')
-      if is_enter(ev) and self.row_selectable and self.on_select_row:
+      if is_enter(ev) and self.row_selectable and self.on_select_row and 0 <= self.row_selectable < len(self.lines):
         self.on_select_row(self.lines[self.selected_row], ev.app)
         ev.stop()
 
