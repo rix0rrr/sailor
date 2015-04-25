@@ -384,14 +384,16 @@ def propagate_focus(ev, controls, layer, keys_back, keys_fwd):
 
 
 class Panel(Control):
-  def __init__(self, controls, caption=None, **kwargs):
+  def __init__(self, controls, caption=None, underscript=None, **kwargs):
     super(Panel, self).__init__(**kwargs)
     self.controls = controls
     self.caption = caption
+    self.underscript = None
 
   def render(self, app):
     return Box(Vertical([c.render(app) for c in self.controls]),
-               caption=self.caption.render(app) if self.caption else None)
+               caption=self.caption.render(app) if self.caption else None,
+               underscript=self.underscript.render(app) if self.underscript else None)
 
   def on_event(self, ev):
     propagate_focus(ev, self.controls, ev.app.layer(self),
@@ -941,6 +943,9 @@ class AutoCompleteEdit(Edit):
         ev.stop()
       if is_enter(ev):
         self.replace_cursor_word(self.select.value)
+        self.show_popup(ev.app, False)
+        ev.stop()
+      if ev.key in [curses.ascii.ESC]:
         self.show_popup(ev.app, False)
         ev.stop()
 
