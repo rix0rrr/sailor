@@ -238,7 +238,7 @@ class Vertical(View):
 
     widths = [s[0] for s in sizes]
     heights = [s[1] for s in sizes]
-    return max(widths), sum(heights) + max(len(self.views) - 1, 0) * self.margin
+    return max(widths + [0]), sum(heights) + max(len(self.views) - 1, 0) * self.margin
 
   def disp(self, rect):
     for v in self.views:
@@ -629,11 +629,10 @@ class Popup(Control):
   def on_event(self, ev):
     if ev.type == 'key':
       if ev.key == curses.ascii.ESC:
-        self.on_close(False, self)
         self.layer.remove()
         ev.stop()
       if is_enter(ev):
-        self.on_close(True, self)
+        self.on_close(self, ev.app)
         self.layer.remove()
         ev.stop()
 
@@ -692,9 +691,8 @@ class Combo(Control):
         Popup(SelectList(self.choices, self.index), self.on_popup_close, x=x, y=y).show(ev.app)
         ev.stop()
 
-  def on_popup_close(self, success, popup):
-    if success:
-      self.index = popup.inner.index
+  def on_popup_close(self, popup, app):
+    self.index = popup.inner.index
 
 
 class Toasty(Control):
@@ -741,9 +739,8 @@ class DateCombo(Control):
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectDate(self.value), self.on_popup_close, x=x, y=y).show(ev.app)
 
-  def on_popup_close(self, success, popup):
-    if success:
-      self.value = popup.inner.value
+  def on_popup_close(self, popup, app):
+    self.value = popup.inner.value
 
 
 class Time(Composite):
@@ -968,22 +965,32 @@ class Button(Control):
 
 
 class PreviewPane(Control):
-  def __init__(self, lines, **kwargs):
+  def __init__(self, lines, row_selectable=False, on_select_row=None, **kwargs):
     super(PreviewPane, self).__init__(**kwargs)
     self.lines = lines
     self.can_focus = True
     self.v_scroll_offset = 0
     self.h_scroll_offset = 0
     self.app = None
+    self.row_selectable = row_selectable
+    self.selected_row = 0
+    self.on_select_row = on_select_row
 
   def render(self, app):
     self.app = app  # FIXME: That's nasty
     attr = 0
-    if app.contains_focus(self):
+    focused = app.contains_focus(self)
+    if focused:
       attr = curses.A_BOLD
 
     display = (l[self.h_scroll_offset:] for l in self.lines[self.v_scroll_offset:])
-    self.last_render = Display('\n'.join(display), attr=attr)
+    if self.row_selectable and focused:
+      hi_offset = self.selected_row - self.v_scroll_offset
+      self.last_render = Vertical([
+        Display(line, attr=attr + (curses.A_STANDOUT if i == hi_offset else 0)) for i, line in enumerate(display)
+        ])
+    else:
+      self.last_render = Display('\n'.join(display), attr=attr)
     return self.last_render
 
   def on_event(self, ev):
@@ -1008,10 +1015,20 @@ class PreviewPane(Control):
           }
 
       if ev.key in v_scrolls:
-        new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
-        if new_v_scroll_offset != self.v_scroll_offset:
-          self.v_scroll_offset = new_v_scroll_offset
-          ev.stop()
+        if self.row_selectable:
+          # We scroll the focus instead of the screen
+          new_selected_row = max(0, min(self.selected_row + v_scrolls[ev.key], len(self.lines) - 1))
+          if self.selected_row != new_selected_row:
+            self.selected_row = new_selected_row
+            self.v_scroll_offset = min(self.v_scroll_offset, self.selected_row)
+            self.v_scroll_offset = max(self.v_scroll_offset, self.selected_row - self.last_render.rect.h + 1)
+            ev.stop()
+        else:
+          # We scroll the screen
+          new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
+          if new_v_scroll_offset != self.v_scroll_offset:
+            self.v_scroll_offset = new_v_scroll_offset
+            ev.stop()
 
       if ev.key in h_scrolls:
         new_h_scroll_offset = max(0, self.h_scroll_offset + h_scrolls[ev.key])
@@ -1021,6 +1038,9 @@ class PreviewPane(Control):
 
       if ev.key == ord('s'):
         EditPopup(ev.app, self._save_contents, value='report.log', caption='Save to file')
+      if is_enter(ev) and self.row_selectable and self.on_select_row:
+        self.on_select_row(self.lines[self.selected_row], ev.app)
+        ev.stop()
 
   def _save_contents(self, accept, box):
     if not accept:
