@@ -16,6 +16,7 @@ CTRL_J = ord('j') - ord('a') + 1
 CTRL_K = ord('k') - ord('a') + 1
 CTRL_N = ord('n') - ord('a') + 1
 CTRL_P = ord('p') - ord('a') + 1
+CTRL_U = ord('u') - ord('a') + 1
 
 MAC_BACKSPACE = 127   # Don't feel like finding out why
 SHIFT_TAB = 353
@@ -810,8 +811,9 @@ class Edit(Control):
         self.cursor = len(self._value)
         ev.stop()
       if ev.key in [curses.KEY_BACKSPACE, MAC_BACKSPACE]:
-        self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
-        self.cursor = max(0, self.cursor - 1)
+        if self.cursor > 0:
+          self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
+          self.cursor = max(0, self.cursor - 1)
         ev.stop()
       if ev.key == curses.ascii.DEL:
         self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
@@ -821,6 +823,10 @@ class Edit(Control):
         ev.stop()
       if ev.key == curses.KEY_RIGHT and self.cursor < len(self._value):
         self.cursor += 1
+        ev.stop()
+      if ev.key == CTRL_U:
+        self.value = ''
+        self.cursor = 0
         ev.stop()
       if 32 <= ev.key < 127:
         self._value = self._value[:self.cursor] + chr(ev.key) + self._value[self.cursor:]
@@ -918,11 +924,21 @@ class Button(Control):
 class PreviewPane(Control):
   def __init__(self, lines, **kwargs):
     super(PreviewPane, self).__init__(**kwargs)
-    self.lines = lines
+    self._lines = lines
     self.can_focus = True
     self.v_scroll_offset = 0
     self.h_scroll_offset = 0
     self.app = None
+
+  @property
+  def lines(self):
+    return self._lines
+
+  @lines.setter
+  def lines(self, lines):
+    self._lines = lines
+    if self.last_render:
+      self.v_scroll_offset = max(0, min(self.v_scroll_offset, len(self.lines) - self.last_render.rect.h))
 
   def render(self, app):
     self.app = app  # FIXME: That's nasty
@@ -940,9 +956,11 @@ class PreviewPane(Control):
           curses.KEY_UP:     -1,
           ord('k'):          -1,
           curses.KEY_PPAGE: -30,
+          ord('K'):         -30,
           curses.KEY_DOWN:    1,
           ord('j'):           1,
           curses.KEY_NPAGE:  30,
+          ord('J'):          30,
           curses.KEY_HOME:  -9999999999,
           ord('g'):         -9999999999,
           curses.KEY_END:    9999999999,
@@ -952,7 +970,7 @@ class PreviewPane(Control):
           curses.KEY_LEFT: -10,
           ord('h'): -10,
           curses.KEY_RIGHT: 10,
-          ord('k'): 10,
+          ord('l'): 10,
           }
 
       if ev.key in v_scrolls:
