@@ -52,6 +52,20 @@ def get_value(x):
   return x.value if isinstance(x, Option) else x
 
 
+def flatten(listOfLists):
+    return itertools.chain.from_iterable(listOfLists)
+
+
+class Colorized(object):
+  def __init__(self, text, color, attr=0):
+    self.text = text
+    self.color = color
+    self.attr = attr
+
+  def __str__(self):
+    return '\0' + str(self.color) + '\1' + str(self.attr) + '\1' + str(self.text) + '\0'
+
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -75,6 +89,10 @@ class Display(View):
     self.bg = bg
     self.min_width = min_width
     self.attr = attr
+
+  @property
+  def text(self):
+    return '\n'.join(self.lines)
 
   def size(self, rect):
     return max(self.min_width, max(len(l) for l in self.lines)), len(self.lines)
@@ -221,7 +239,7 @@ class Vertical(View):
 
     widths = [s[0] for s in sizes]
     heights = [s[1] for s in sizes]
-    return max(widths), sum(heights) + max(len(self.views) - 1, 0) * self.margin
+    return max(widths + [0]), sum(heights) + max(len(self.views) - 1, 0) * self.margin
 
   def disp(self, rect):
     for v in self.views:
@@ -367,14 +385,16 @@ def propagate_focus(ev, controls, layer, keys_back, keys_fwd):
 
 
 class Panel(Control):
-  def __init__(self, controls, caption=None, **kwargs):
+  def __init__(self, controls, caption=None, underscript=None, **kwargs):
     super(Panel, self).__init__(**kwargs)
     self.controls = controls
     self.caption = caption
+    self.underscript = None
 
   def render(self, app):
     return Box(Vertical([c.render(app) for c in self.controls]),
-               caption=self.caption.render(app) if self.caption else None)
+               caption=self.caption.render(app) if self.caption else None,
+               underscript=self.underscript.render(app) if self.underscript else None)
 
   def on_event(self, ev):
     propagate_focus(ev, self.controls, ev.app.layer(self),
@@ -612,11 +632,10 @@ class Popup(Control):
   def on_event(self, ev):
     if ev.type == 'key':
       if ev.key == curses.ascii.ESC:
-        self.on_close(False, self)
         self.layer.remove()
         ev.stop()
       if is_enter(ev):
-        self.on_close(True, self)
+        self.on_close(self, ev.app)
         self.layer.remove()
         ev.stop()
 
@@ -673,10 +692,10 @@ class Combo(Control):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectList(self.choices, self.index), self.on_popup_close, x=x, y=y).show(ev.app)
+        ev.stop()
 
-  def on_popup_close(self, success, popup):
-    if success:
-      self.index = popup.inner.index
+  def on_popup_close(self, popup, app):
+    self.index = popup.inner.index
 
 
 class Toasty(Control):
@@ -723,9 +742,8 @@ class DateCombo(Control):
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectDate(self.value), self.on_popup_close, x=x, y=y).show(ev.app)
 
-  def on_popup_close(self, success, popup):
-    if success:
-      self.value = popup.inner.value
+  def on_popup_close(self, popup, app):
+    self.value = popup.inner.value
 
 
 class Time(Composite):
@@ -780,27 +798,57 @@ class Edit(Control):
   def render(self, app):
     focused = app.contains_focus(self)
 
-    chars = list(self.value)
+    # Default highlighting, foreground color
+    colorized = self.value
     if self.highlight:
       # Custom highlighting
-      attrs = self.highlight(chars)
-    else:
-      # Default highlighting, foreground color
-      attrs = [(self.fg, 0) for c in chars]
+      try:
+        colorized = self.highlight(self.value)
+      except Exception, e:
+        logger.error(str(e))
 
     # Make the field longer for the cursor or display purposes
-    ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(chars))
-    chars.extend(' ' * ext_len)
-    attrs.extend((self.fg, 0) for i in range(ext_len))
-
-    # If we have focus, and an underline and a highlight
-    if focused:
-      attrs = [(col, a | curses.A_UNDERLINE) for col, a in attrs]
-      attrs[self.cursor] = (attrs[self.cursor][0], attrs[self.cursor][0] | curses.A_REVERSE)
+    ext_len = max(0, max(self.cursor + 1 if focused else 0, self.min_size) - len(self.value))
+    colorized += ' ' * ext_len
 
     # Render that momma
-    self.rendered = Horizontal([Display(c, fg=col, attr=att) for c, (col, att) in zip(chars, attrs)])
+    self.rendered = Horizontal(self._render_colorized(colorized, focused))
     return self.rendered
+
+  def _render_colorized(self, colorized, focused):
+    """Split a colorized string into Display() slices."""
+    base_attr = 0
+    if focused:
+      base_attr = curses.A_UNDERLINE
+
+    frag_list = []
+    parts = colorized.split('\0')
+    chars_so_far = 0
+    for i in range(0, len(parts), 2):
+      # i is regular, i+1 is colorized (if it's there)
+      frag_list.append(Display(parts[i], fg=self.fg, attr=base_attr))
+      if focused:
+        chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+
+      if i + 1 < len(parts):
+        color, attr, text = parts[i+1].split('\1')
+        frag_list.append(Display(text, fg=int(color), attr=base_attr+int(attr)))
+        if focused:
+          chars_so_far = self._inject_cursor(chars_so_far, frag_list)
+
+    return frag_list
+
+  def _inject_cursor(self, chars_so_far, frag_list):
+    """If the cursor falls into this fragment, highlight it."""
+    last = frag_list[-1]
+    if chars_so_far <= self.cursor < chars_so_far + len(last.text):
+      offset = self.cursor - chars_so_far
+      pre, hi, post = last.text[:offset], last.text[offset], last.text[offset+1:]
+      frag_list[-1:] = [Display(pre, fg=last.fg, attr=last.attr),
+                        Display(hi, fg=last.fg, attr=last.attr + curses.A_STANDOUT),
+                        Display(post, fg=last.fg, attr=last.attr)]
+
+    return chars_so_far + len(last.text)
 
   def on_event(self, ev):
     if ev.type == 'key':
@@ -815,8 +863,9 @@ class Edit(Control):
           self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
           self.cursor = max(0, self.cursor - 1)
         ev.stop()
-      if ev.key == curses.ascii.DEL:
-        self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
+      elif ev.key == curses.ascii.DEL:
+        if self.cursor < len(self._value) - 1:
+          self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
         ev.stop()
       if ev.key == curses.KEY_LEFT and self.cursor > 0:
         self.cursor -= 1
@@ -835,13 +884,14 @@ class Edit(Control):
 
 
 class AutoCompleteEdit(Edit):
-  def __init__(self, value, complete_fn, min_size=0, **kwargs):
+  def __init__(self, value, complete_fn, min_size=0, letters=string.letters, **kwargs):
     super(AutoCompleteEdit, self).__init__(value=value, min_size=min_size, **kwargs)
     self.complete_fn = complete_fn
     self.popup_visible = False
     self.select = SelectList([], 0, width=70, show_captions_at=30)
     self.popup = Popup(self.select, on_close=self.on_close, underscript='( ^N, ^P to move, Enter to select )')
     self.layer = None
+    self.letters = letters
 
   def on_close(self):
     pass
@@ -865,11 +915,11 @@ class AutoCompleteEdit(Edit):
     Returns (offset, string).
     """
     i = min(self.cursor, len(self.value) - 1)  # Inclusive
-    while (i > 0 and self.value[i] in string.letters and
-           self.value[i-1] in string.letters):
+    while (i > 0 and self.value[i] in self.letters and
+           self.value[i-1] in self.letters):
       i -= 1
     j = i + 1  # Exclusive
-    while (j < len(self.value) and self.value[j] in string.letters):
+    while (j < len(self.value) and self.value[j] in self.letters):
       j += 1
     return (i, self.value[i:j])
 
@@ -900,6 +950,9 @@ class AutoCompleteEdit(Edit):
         self.replace_cursor_word(self.select.value)
         self.show_popup(ev.app, False)
         ev.stop()
+      if ev.key in [curses.ascii.ESC]:
+        self.show_popup(ev.app, False)
+        ev.stop()
 
 
 class Button(Control):
@@ -922,13 +975,16 @@ class Button(Control):
 
 
 class PreviewPane(Control):
-  def __init__(self, lines, **kwargs):
+  def __init__(self, lines, row_selectable=False, on_select_row=None, **kwargs):
     super(PreviewPane, self).__init__(**kwargs)
     self._lines = lines
     self.can_focus = True
     self.v_scroll_offset = 0
     self.h_scroll_offset = 0
     self.app = None
+    self.row_selectable = row_selectable
+    self.selected_row = 0
+    self.on_select_row = on_select_row
 
   @property
   def lines(self):
@@ -943,11 +999,18 @@ class PreviewPane(Control):
   def render(self, app):
     self.app = app  # FIXME: That's nasty
     attr = 0
-    if app.contains_focus(self):
+    focused = app.contains_focus(self)
+    if focused:
       attr = curses.A_BOLD
 
     display = (l[self.h_scroll_offset:] for l in self.lines[self.v_scroll_offset:])
-    self.last_render = Display('\n'.join(display), attr=attr)
+    if self.row_selectable and focused:
+      hi_offset = self.selected_row - self.v_scroll_offset
+      self.last_render = Vertical([
+        Display(line, attr=attr + (curses.A_STANDOUT if i == hi_offset else 0)) for i, line in enumerate(display)
+        ])
+    else:
+      self.last_render = Display('\n'.join(display), attr=attr)
     return self.last_render
 
   def on_event(self, ev):
@@ -974,10 +1037,20 @@ class PreviewPane(Control):
           }
 
       if ev.key in v_scrolls:
-        new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
-        if new_v_scroll_offset != self.v_scroll_offset:
-          self.v_scroll_offset = new_v_scroll_offset
-          ev.stop()
+        if self.row_selectable:
+          # We scroll the focus instead of the screen
+          new_selected_row = max(0, min(self.selected_row + v_scrolls[ev.key], len(self.lines) - 1))
+          if self.selected_row != new_selected_row:
+            self.selected_row = new_selected_row
+            self.v_scroll_offset = min(self.v_scroll_offset, self.selected_row)
+            self.v_scroll_offset = max(self.v_scroll_offset, self.selected_row - self.last_render.rect.h + 1)
+            ev.stop()
+        else:
+          # We scroll the screen
+          new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
+          if new_v_scroll_offset != self.v_scroll_offset:
+            self.v_scroll_offset = new_v_scroll_offset
+            ev.stop()
 
       if ev.key in h_scrolls:
         new_h_scroll_offset = max(0, self.h_scroll_offset + h_scrolls[ev.key])
@@ -987,6 +1060,9 @@ class PreviewPane(Control):
 
       if ev.key == ord('s'):
         EditPopup(ev.app, self._save_contents, value='report.log', caption='Save to file')
+      if is_enter(ev) and self.row_selectable and self.on_select_row and 0 <= self.row_selectable < len(self.lines):
+        self.on_select_row(self.lines[self.selected_row], ev.app)
+        ev.stop()
 
   def _save_contents(self, accept, box):
     if not accept:
