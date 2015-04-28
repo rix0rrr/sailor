@@ -741,6 +741,7 @@ class DateCombo(Control):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectDate(self.value), self.on_popup_close, x=x, y=y).show(ev.app)
+        ev.stop()
 
   def on_popup_close(self, popup, app):
     self.value = popup.inner.value
@@ -1064,9 +1065,7 @@ class PreviewPane(Control):
         self.on_select_row(self.lines[self.selected_row], ev.app)
         ev.stop()
 
-  def _save_contents(self, accept, box):
-    if not accept:
-      return
+  def _save_contents(self, box, app):
     filename = box.inner.value
 
     try:
