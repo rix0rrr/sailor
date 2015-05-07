@@ -66,6 +66,39 @@ class Colorized(object):
     return '\0' + str(self.color) + '\1' + str(self.attr) + '\1' + str(self.text) + '\0'
 
 
+def handle_scroll_key(key, current_row, row_count, scroll_offset, win_height, page_size=10):
+    """Handle scrolling one or more lines based on key presses.
+
+    Returns:
+        (change, row_index, scroll_offset) tuple
+    """
+    v_scrolls = {
+        curses.KEY_UP:     -1,
+        ord('k'):          -1,
+        curses.KEY_PPAGE: -page_size,
+        ord('K'):         -page_size,
+        curses.KEY_DOWN:    1,
+        ord('j'):           1,
+        curses.KEY_NPAGE:  page_size,
+        ord('J'):          page_size,
+        curses.KEY_HOME:  -9999999999,
+        ord('g'):         -9999999999,
+        curses.KEY_END:    9999999999,
+        ord('G'):          9999999999,
+        }
+
+    if key not in v_scrolls:
+      return False, current_row, scroll_offset
+
+    new_row = max(0, min(current_row + v_scrolls[key], row_count - 1))
+    if current_row == new_row:
+      return False, current_row, scroll_offset
+
+    scroll_offset = min(scroll_offset, new_row)
+    scroll_offset = max(scroll_offset, new_row - win_height + 1)
+    return True, new_row, scroll_offset
+
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -505,26 +538,15 @@ class SelectList(Control):
     lines = self.choices[self.scroll_offset:self.scroll_offset + self.height]
     lines.extend([''] * (self.height - len(lines)))
 
-    vert = Vertical([self._render_line(l, i + self.scroll_offset == self.index) for i, l in enumerate(lines)])
+    self.last_render = Vertical([self._render_line(l, i + self.scroll_offset == self.index) for i, l in enumerate(lines)])
 
     # FIXME: Scroll bar
-    return vert
+    return self.last_render
 
   def on_event(self, ev):
     if ev.type == 'key':
-      if ev.key == curses.KEY_UP and 0 < self.index:
-        self.index -= 1
-        self.scroll_offset = min(self.scroll_offset, self.index)
-        ev.stop()
-      if ev.key == curses.KEY_DOWN and self.index < len(self.choices) - 1:
-        self.index += 1
-        self.scroll_offset = max(self.scroll_offset, self.index - self.height + 1)
-        ev.stop()
-      if ev.key == curses.KEY_HOME:
-        self.index = 0
-        ev.stop()
-      if ev.key == curses.KEY_END:
-        self.index = len(self.choices) - 1
+      change, self.index, self.scroll_offset = handle_scroll_key(ev.key, self.index, len(self.choices), self.scroll_offset, self.last_render.rect.h)
+      if change:
         ev.stop()
 
 
@@ -1016,20 +1038,6 @@ class PreviewPane(Control):
 
   def on_event(self, ev):
     if ev.type == 'key':
-      v_scrolls = {
-          curses.KEY_UP:     -1,
-          ord('k'):          -1,
-          curses.KEY_PPAGE: -30,
-          ord('K'):         -30,
-          curses.KEY_DOWN:    1,
-          ord('j'):           1,
-          curses.KEY_NPAGE:  30,
-          ord('J'):          30,
-          curses.KEY_HOME:  -9999999999,
-          ord('g'):         -9999999999,
-          curses.KEY_END:    9999999999,
-          ord('G'):          9999999999,
-          }
       h_scrolls = {
           curses.KEY_LEFT: -10,
           ord('h'): -10,
@@ -1037,21 +1045,16 @@ class PreviewPane(Control):
           ord('l'): 10,
           }
 
-      if ev.key in v_scrolls:
-        if self.row_selectable:
-          # We scroll the focus instead of the screen
-          new_selected_row = max(0, min(self.selected_row + v_scrolls[ev.key], len(self.lines) - 1))
-          if self.selected_row != new_selected_row:
-            self.selected_row = new_selected_row
-            self.v_scroll_offset = min(self.v_scroll_offset, self.selected_row)
-            self.v_scroll_offset = max(self.v_scroll_offset, self.selected_row - self.last_render.rect.h + 1)
-            ev.stop()
-        else:
-          # We scroll the screen
-          new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
-          if new_v_scroll_offset != self.v_scroll_offset:
-            self.v_scroll_offset = new_v_scroll_offset
-            ev.stop()
+
+      if self.row_selectable:
+        # We scroll the focus
+        change, self.selected_row, self.v_scroll_offset = handle_scroll_key(ev.key, self.selected_row, len(self.lines), self.v_scroll_offset, self.last_render.rect.h, page_size=30)
+      else:
+        # We scroll the screen
+        change, self.v_scroll_offset, _ = handle_scroll_key(ev.key, self.v_scroll_offset, len(self.lines), self.v_scroll_offset, self.last_render.rect.h, page_size=30)
+
+      if change:
+        ev.stop()
 
       if ev.key in h_scrolls:
         new_h_scroll_offset = max(0, self.h_scroll_offset + h_scrolls[ev.key])
