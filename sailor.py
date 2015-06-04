@@ -21,6 +21,7 @@ CTRL_U = ord('u') - ord('a') + 1
 MAC_BACKSPACE = 127   # Don't feel like finding out why
 SHIFT_TAB = 353
 CR = 13  # Or Ctrl-M, so don't use that
+OTHER_DEL = 330
 
 black = curses.COLOR_BLACK
 red = curses.COLOR_RED
@@ -886,7 +887,7 @@ class Edit(Control):
           self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
           self.cursor = max(0, self.cursor - 1)
         ev.stop()
-      elif ev.key == curses.ascii.DEL:
+      elif ev.key in [curses.ascii.DEL, OTHER_DEL]:
         if self.cursor < len(self._value) - 1:
           self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
         ev.stop()
