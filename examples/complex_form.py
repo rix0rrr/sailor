@@ -1,7 +1,9 @@
 """Sample sailor program."""
+# Load sailor from one directory higher
+import sys
+sys.path.insert(0, '..')
 
 import datetime
-
 import sailor as s
 
 

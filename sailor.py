@@ -69,19 +69,28 @@ class Colorized(object):
 #  VIEW classes
 
 class View(object):
+  """Base class for objects that can paint themselves to a curses surface.
+
+  Sailor users don't instantiate views. Instead, they instantiate controls,
+  which render themselves Views to represent their current physical appearance.
+  """
   def size(self, rect):
+    """Return the size that the view takes up."""
     return (0, 0)
 
   def display(self, rect):
+    """Render the view inside the given rectangle."""
     self.rect = rect
     if rect.w > 0 and rect.h > 0:
       self.disp(rect)
 
   def disp(self, rect):
+    """Overridden by subclasses to do the actual rendering."""
     raise RuntimeError('Not implemented: disp()')
 
 
 class Display(View):
+  """A view that displays literal characters."""
   def __init__(self, text, min_width=0, fg=white, bg=black, attr=0):
     self.lines = str(text).split('\n')
     self.fg = fg
@@ -110,6 +119,7 @@ class Display(View):
 
 
 class Positioned(View):
+  """A view that offsets another view inside the given rectangle."""
   def __init__(self, inner, x=-1, y=-1):
     self.inner = inner
     self.x = x
@@ -128,6 +138,7 @@ class Positioned(View):
 
 
 class Centered(View):
+  """A view that centers another view inside the available rectangle."""
   def __init__(self, inner):
     self.inner = inner
 
@@ -143,6 +154,7 @@ class Centered(View):
 
 
 class AlignRight(View):
+  """A view that right-aligns another view inside the available rectangle."""
   def __init__(self, inner, h_margin=2, v_margin=1):
     self.inner = inner
     self.h_margin = h_margin
@@ -158,6 +170,7 @@ class AlignRight(View):
 
 
 class HFill(View):
+  """A view that uses a single character to fill out the available width."""
   def __init__(self, char, fg=white, bg=black):
     self.char = char
     self.fg = fg
@@ -172,6 +185,7 @@ class HFill(View):
 
 
 class Horizontal(View):
+  """A view that lays out other views horizontally."""
   def __init__(self, views, margin=0):
     assert(all(views))
     self.views = views
@@ -195,6 +209,7 @@ class Horizontal(View):
 
 
 class Grid(View):
+  """A view that lays out other views in a grid."""
   def __init__(self, grid, h_margin=1, align_right=False):
     self.grid = grid
     self.h_margin = h_margin
@@ -226,6 +241,7 @@ class Grid(View):
 
 
 class Vertical(View):
+  """A view that lays out other views vertically."""
   def __init__(self, views, margin=0):
     self.views = views
     self.margin = margin
@@ -248,6 +264,7 @@ class Vertical(View):
 
 
 class Box(View):
+  """A box with another view inside it."""
   def __init__(self, inner, caption=None, underscript=None, x_margin=1, y_margin=0, x_fill=True, y_fill=False):
     self.inner = inner
     self.caption = caption
@@ -301,6 +318,15 @@ class Box(View):
 
 
 class Control(object):
+  """Base class for Controls.
+
+  New Control implementations should:
+
+  - Pass on constructor **kwargs.
+  - Put their children in the self.controls member, or override
+    the children() method.
+  - Override render() to return an instance of View.
+  """
   def __init__(self, fg=white, bg=black, id=None):
     self.fg = fg
     self.bg = bg
@@ -352,6 +378,7 @@ class Control(object):
 
 
 class Text(Control):
+  """Display some text in the UI."""
   def __init__(self, value, **kwargs):
     super(Text, self).__init__(**kwargs)
     self.value = value
@@ -384,6 +411,7 @@ def propagate_focus(ev, controls, layer, keys_back, keys_fwd):
 
 
 class Panel(Control):
+  """Contains other controls vertically, surrounds them with a box."""
   def __init__(self, controls, caption=None, underscript=None, **kwargs):
     super(Panel, self).__init__(**kwargs)
     self.controls = controls
@@ -402,6 +430,7 @@ class Panel(Control):
 
 
 class Stacked(Control):
+  """Just lays out other controls vertically, no decoration."""
   def __init__(self, controls, **kwargs):
     super(Stacked, self).__init__(**kwargs)
     self.controls = controls
@@ -416,7 +445,12 @@ class Stacked(Control):
 
 
 class Option(object):
-  """Helper class to attach data to a string."""
+  """Helper class to attach data to a string.
+
+  This object contains one value, but stringifies to a user-chosen
+  string, making it ideal for separating symbolic values from human
+  representation in selection lists/comboboxes.
+  """
   def __init__(self, value, caption=None):
     self.value = value
     self.caption = caption or str(value)
@@ -443,6 +477,7 @@ class Option(object):
 
 
 class Labeled(Control):
+  """Applies an offset to a control, fill it with a text label."""
   def __init__(self, label, control, **kwargs):
     super(Labeled, self).__init__(**kwargs)
     assert(control)
@@ -460,7 +495,14 @@ class Labeled(Control):
 
 
 class SelectList(Control):
-  def __init__(self, choices, index, width=30, height=10, show_captions_at=0, **kwargs):
+  """Selection list.
+
+  Displays a set of values with an initial selected index, and lets the user
+  change the selection.
+
+  The `selectList.value` property contains the selected value.
+  """
+  def __init__(self, choices, index=0, width=30, height=10, show_captions_at=0, **kwargs):
     super(SelectList, self).__init__(**kwargs)
     self.choices = choices
     self.index = index
@@ -471,6 +513,7 @@ class SelectList(Control):
     self.show_captions_at = show_captions_at
 
   def adjust(self, d):
+    """Scroll by the given delta through the options."""
     if len(self.choices) > 1:
       self.index = (self.index + d + len(self.choices)) % len(self.choices)
       self.scroll_offset = min(self.scroll_offset, self.index)
@@ -482,10 +525,15 @@ class SelectList(Control):
 
   @property
   def value(self):
+    """Return the currently selected value."""
     return get_value(self.choices[self.index])
 
   @value.setter
   def value(self, value):
+    """Set the currently selected value.
+
+    Reset to 0 if not in the list.
+    """
     self.index = max(0, self.choices.index(value))
 
   def _render_line(self, line, selected):
@@ -528,10 +576,16 @@ class SelectList(Control):
 
 
 class SelectDate(Control):
+  """A Calendar control for selecting a date.
+
+  `.value` contains the date as a datetime.datetime.
+  `.date` contains the date date as a datetime.date.
+  """
   def __init__(self, value=None, **kwargs):
     super(Control, self).__init__(**kwargs)
     self.can_focus = True
     self.value = value or datetime.datetime.now()
+    self.controls = []
 
   def _render_monthcell(self, cell):
     if not cell:
@@ -580,6 +634,7 @@ class SelectDate(Control):
 
 
 class Composite(Control):
+  """Horizontal composition of other controls."""
   def __init__(self, controls, margin=0, **kwargs):
     super(Composite, self).__init__(**kwargs)
     self.controls = controls
@@ -604,6 +659,14 @@ class Composite(Control):
 
 
 class Popup(Control):
+  """Show a modal popup that contains another control.
+
+  After instantiating this object, call `popup.show(app)`.
+
+  The popup is automatically removed when an ENTER or ESC
+  keypress escapes the focused control, but on_close will
+  only be called if ENTER was used to remove the popup.
+  """
   def __init__(self, inner, on_close, x=-1, y=-1, caption='', underscript='', **kwargs):
     super(Popup, self).__init__(**kwargs)
     self.x = x
@@ -640,10 +703,12 @@ class Popup(Control):
 
 
 def EditPopup(app, on_close, value='', caption=''):
+  """Show a popup with to edit a value."""
   Popup(Edit(value=value, min_size=30, fg=cyan), caption=caption, on_close=on_close).show(app)
 
 
 class Combo(Control):
+  """A SelectList in a popup."""
   def __init__(self, choices, index=0, **kwargs):
     super(Combo, self).__init__(**kwargs)
     self._choices = choices
@@ -719,6 +784,7 @@ class Toasty(Control):
 
 
 class DateCombo(Control):
+  """A SelectDate in a popup."""
   def __init__(self, value=None, **kwargs):
     super(DateCombo, self).__init__(**kwargs)
     self.value = value or datetime.datetime.now()
@@ -746,6 +812,7 @@ class DateCombo(Control):
 
 
 class Time(Composite):
+  """A time selection control."""
   def __init__(self, value=None, **kwargs):
     self.value = value or datetime.datetime.utcnow().time()
 
@@ -879,6 +946,11 @@ class Edit(Control):
 
 
 class AutoCompleteEdit(Edit):
+  """Edit control with autocomplete.
+
+  complete_fn is a function that gets the current word under
+  the cursor, and should return all possible completions.
+  """
   def __init__(self, value, complete_fn, min_size=0, letters=string.letters, **kwargs):
     super(AutoCompleteEdit, self).__init__(value=value, min_size=min_size, **kwargs)
     self.complete_fn = complete_fn
@@ -951,6 +1023,7 @@ class AutoCompleteEdit(Edit):
 
 
 class Button(Control):
+  """Button which calls an event handler if hit."""
   def __init__(self, caption, on_click=None, fg=yellow, **kwargs):
     super(Button, self).__init__(fg=fg, **kwargs)
     self.caption = caption
@@ -970,6 +1043,7 @@ class Button(Control):
 
 
 class PreviewPane(Control):
+  """A scrollable panel to view some large document in."""
   def __init__(self, lines, row_selectable=False, on_select_row=None, **kwargs):
     super(PreviewPane, self).__init__(**kwargs)
     self.lines = lines
@@ -1058,6 +1132,23 @@ class PreviewPane(Control):
       Toasty('%s saved' % filename).show(self.app)
     except Exception, e:
       Toasty(str(e), duration=datetime.timedelta(seconds=5)).show(self.app)
+
+
+class SwitchableControl(Control):
+    """A control that can change the control it's displaying."""
+    def __init__(self, initial_control, **kwargs):
+      super(SwitchableControl, self).__init__(**kwargs)
+      self.controls.append(initial_control)
+
+    def switch(self, control, app):
+      # Keep focus if we had focus before, but don't steal it otherwise
+      had_focus = app.contains_focus(self)
+      self.controls[:] = [control]
+      if had_focus:
+        control.enter_focus('', app)
+
+    def render(self, app):
+      return self.controls[0].render(app)
 
 
 #----------------------------------------------------------------------
