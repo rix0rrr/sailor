@@ -16,10 +16,12 @@ CTRL_J = ord('j') - ord('a') + 1
 CTRL_K = ord('k') - ord('a') + 1
 CTRL_N = ord('n') - ord('a') + 1
 CTRL_P = ord('p') - ord('a') + 1
+CTRL_U = ord('u') - ord('a') + 1
 
 MAC_BACKSPACE = 127   # Don't feel like finding out why
 SHIFT_TAB = 353
 CR = 13  # Or Ctrl-M, so don't use that
+OTHER_DEL = 330
 
 black = curses.COLOR_BLACK
 red = curses.COLOR_RED
@@ -65,6 +67,39 @@ class Colorized(object):
     return '\0' + str(self.color) + '\1' + str(self.attr) + '\1' + str(self.text) + '\0'
 
 
+def handle_scroll_key(key, current_row, row_count, scroll_offset, win_height, page_size=10):
+    """Handle scrolling one or more lines based on key presses.
+
+    Returns:
+        (change, row_index, scroll_offset) tuple
+    """
+    v_scrolls = {
+        curses.KEY_UP:     -1,
+        ord('k'):          -1,
+        curses.KEY_PPAGE: -page_size,
+        ord('K'):         -page_size,
+        curses.KEY_DOWN:    1,
+        ord('j'):           1,
+        curses.KEY_NPAGE:  page_size,
+        ord('J'):          page_size,
+        curses.KEY_HOME:  -9999999999,
+        ord('g'):         -9999999999,
+        curses.KEY_END:    9999999999,
+        ord('G'):          9999999999,
+        }
+
+    if key not in v_scrolls:
+      return False, current_row, scroll_offset
+
+    new_row = max(0, min(current_row + v_scrolls[key], row_count - 1))
+    if current_row == new_row:
+      return False, current_row, scroll_offset
+
+    scroll_offset = min(scroll_offset, new_row)
+    scroll_offset = max(scroll_offset, new_row - win_height + 1)
+    return True, new_row, scroll_offset
+
+
 #----------------------------------------------------------------------
 #  VIEW classes
 
@@ -92,7 +127,10 @@ class View(object):
 class Display(View):
   """A view that displays literal characters."""
   def __init__(self, text, min_width=0, fg=white, bg=black, attr=0):
-    self.lines = str(text).split('\n')
+    if isinstance(text, list):
+      self.lines = text
+    else:
+      self.lines = str(text).split('\n')
     self.fg = fg
     self.bg = bg
     self.min_width = min_width
@@ -552,26 +590,15 @@ class SelectList(Control):
     lines = self.choices[self.scroll_offset:self.scroll_offset + self.height]
     lines.extend([''] * (self.height - len(lines)))
 
-    vert = Vertical([self._render_line(l, i + self.scroll_offset == self.index) for i, l in enumerate(lines)])
+    self.last_render = Vertical([self._render_line(l, i + self.scroll_offset == self.index) for i, l in enumerate(lines)])
 
     # FIXME: Scroll bar
-    return vert
+    return self.last_render
 
   def on_event(self, ev):
     if ev.type == 'key':
-      if ev.key == curses.KEY_UP and 0 < self.index:
-        self.index -= 1
-        self.scroll_offset = min(self.scroll_offset, self.index)
-        ev.stop()
-      if ev.key == curses.KEY_DOWN and self.index < len(self.choices) - 1:
-        self.index += 1
-        self.scroll_offset = max(self.scroll_offset, self.index - self.height + 1)
-        ev.stop()
-      if ev.key == curses.KEY_HOME:
-        self.index = 0
-        ev.stop()
-      if ev.key == curses.KEY_END:
-        self.index = len(self.choices) - 1
+      change, self.index, self.scroll_offset = handle_scroll_key(ev.key, self.index, len(self.choices), self.scroll_offset, self.last_render.rect.h)
+      if change:
         ev.stop()
 
 
@@ -806,6 +833,7 @@ class DateCombo(Control):
         x = max(0, self.last_combo.rect.x - 2)
         y = max(0, self.last_combo.rect.y - 1)
         Popup(SelectDate(self.value), self.on_popup_close, x=x, y=y).show(ev.app)
+        ev.stop()
 
   def on_popup_close(self, popup, app):
     self.value = popup.inner.value
@@ -929,7 +957,7 @@ class Edit(Control):
           self._value = self._value[:self.cursor-1] + self._value[self.cursor:]
           self.cursor = max(0, self.cursor - 1)
         ev.stop()
-      elif ev.key == curses.ascii.DEL:
+      elif ev.key in [curses.ascii.DEL, OTHER_DEL]:
         if self.cursor < len(self._value) - 1:
           self._value = self._value[:self.cursor] + self._value[self.cursor+1:]
         ev.stop()
@@ -938,6 +966,10 @@ class Edit(Control):
         ev.stop()
       if ev.key == curses.KEY_RIGHT and self.cursor < len(self._value):
         self.cursor += 1
+        ev.stop()
+      if ev.key == CTRL_U:
+        self.value = ''
+        self.cursor = 0
         ev.stop()
       if 32 <= ev.key < 127:
         self._value = self._value[:self.cursor] + chr(ev.key) + self._value[self.cursor:]
@@ -1043,10 +1075,9 @@ class Button(Control):
 
 
 class PreviewPane(Control):
-  """A scrollable panel to view some large document in."""
-  def __init__(self, lines, row_selectable=False, on_select_row=None, **kwargs):
+  def __init__(self, text, row_selectable=False, on_select_row=None, **kwargs):
     super(PreviewPane, self).__init__(**kwargs)
-    self.lines = lines
+    self._text = text
     self.can_focus = True
     self.v_scroll_offset = 0
     self.h_scroll_offset = 0
@@ -1054,6 +1085,36 @@ class PreviewPane(Control):
     self.row_selectable = row_selectable
     self.selected_row = 0
     self.on_select_row = on_select_row
+    self._index_text()
+
+  @property
+  def text(self):
+    return self._text
+
+  @text.setter
+  def text(self, text):
+    self._text = text
+    self._index_text()
+    if self.last_render:
+      self.v_scroll_offset = max(0, min(self.v_scroll_offset, len(self.lines) - self.last_render.rect.h))
+
+  @property
+  def lines(self):
+    ret = []
+    for l_start, l_end in self._lines:
+      ret.append(self._text[l_start:l_end])
+    return ret
+
+  def _index_text(self):
+    """Run through _text and index all the newlines in it."""
+    self._lines = []
+
+    start = 0
+    newline = self._text.find('\n')
+    while newline != -1:
+      self._lines.append((start, newline))
+      start, newline = newline + 1, self._text.find('\n', newline + 1)
+    self._lines.append((start, len(self._text)))
 
   def render(self, app):
     self.app = app  # FIXME: That's nasty
@@ -1062,52 +1123,36 @@ class PreviewPane(Control):
     if focused:
       attr = curses.A_BOLD
 
-    display = (l[self.h_scroll_offset:] for l in self.lines[self.v_scroll_offset:])
+    MAX_HEIGHT = 1000  # No screen will ever contain more than this many lines
+
+    display_lines = list(self._text[l_start + self.h_scroll_offset:l_end] for l_start, l_end in self._lines[self.v_scroll_offset:self.v_scroll_offset + MAX_HEIGHT])
     if self.row_selectable and focused:
       hi_offset = self.selected_row - self.v_scroll_offset
       self.last_render = Vertical([
-        Display(line, attr=attr + (curses.A_STANDOUT if i == hi_offset else 0)) for i, line in enumerate(display)
+        Display(line, attr=attr + (curses.A_STANDOUT if i == hi_offset else 0)) for i, line in enumerate(display_lines)
         ])
     else:
-      self.last_render = Display('\n'.join(display), attr=attr)
+      self.last_render = Display(display_lines, attr=attr)
     return self.last_render
 
   def on_event(self, ev):
     if ev.type == 'key':
-      v_scrolls = {
-          curses.KEY_UP:     -1,
-          ord('k'):          -1,
-          curses.KEY_PPAGE: -30,
-          curses.KEY_DOWN:    1,
-          ord('j'):           1,
-          curses.KEY_NPAGE:  30,
-          curses.KEY_HOME:  -9999999999,
-          ord('g'):         -9999999999,
-          curses.KEY_END:    9999999999,
-          ord('G'):          9999999999,
-          }
       h_scrolls = {
           curses.KEY_LEFT: -10,
           ord('h'): -10,
           curses.KEY_RIGHT: 10,
-          ord('k'): 10,
+          ord('l'): 10,
           }
 
-      if ev.key in v_scrolls:
-        if self.row_selectable:
-          # We scroll the focus instead of the screen
-          new_selected_row = max(0, min(self.selected_row + v_scrolls[ev.key], len(self.lines) - 1))
-          if self.selected_row != new_selected_row:
-            self.selected_row = new_selected_row
-            self.v_scroll_offset = min(self.v_scroll_offset, self.selected_row)
-            self.v_scroll_offset = max(self.v_scroll_offset, self.selected_row - self.last_render.rect.h + 1)
-            ev.stop()
-        else:
-          # We scroll the screen
-          new_v_scroll_offset = max(0, min(self.v_scroll_offset + v_scrolls[ev.key], len(self.lines) - self.last_render.rect.h))
-          if new_v_scroll_offset != self.v_scroll_offset:
-            self.v_scroll_offset = new_v_scroll_offset
-            ev.stop()
+      if self.row_selectable:
+        # We scroll the focus
+        change, self.selected_row, self.v_scroll_offset = handle_scroll_key(ev.key, self.selected_row, len(self._lines), self.v_scroll_offset, self.last_render.rect.h, page_size=30)
+      else:
+        # We scroll the screen
+        change, self.v_scroll_offset, _ = handle_scroll_key(ev.key, self.v_scroll_offset, len(self._lines), self.v_scroll_offset, self.last_render.rect.h, page_size=30)
+
+      if change:
+        ev.stop()
 
       if ev.key in h_scrolls:
         new_h_scroll_offset = max(0, self.h_scroll_offset + h_scrolls[ev.key])
@@ -1117,18 +1162,18 @@ class PreviewPane(Control):
 
       if ev.key == ord('s'):
         EditPopup(ev.app, self._save_contents, value='report.log', caption='Save to file')
-      if is_enter(ev) and self.row_selectable and self.on_select_row and 0 <= self.row_selectable < len(self.lines):
-        self.on_select_row(self.lines[self.selected_row], ev.app)
+      if is_enter(ev) and self.row_selectable and self.on_select_row and 0 <= self.row_selectable < len(self._lines):
+
+        l_start, l_end = self._lines[self.selected_row]
+        self.on_select_row(self._text[l_start:l_end], ev.app)
         ev.stop()
 
-  def _save_contents(self, accept, box):
-    if not accept:
-      return
+  def _save_contents(self, box, app):
     filename = box.inner.value
 
     try:
       with file(filename, 'w') as f:
-        f.write('\n'.join(self.lines))
+        f.write(self._text)
       Toasty('%s saved' % filename).show(self.app)
     except Exception, e:
       Toasty(str(e), duration=datetime.timedelta(seconds=5)).show(self.app)

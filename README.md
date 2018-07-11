@@ -71,7 +71,7 @@ control but which one that is can change (`SwitchableControl`), or generate
   ENTER was used to remove the popup.
 * `Time(value)`: a time selection control. `.time` has the selected time.
 * `Stacked(controls)`: vertically contains other controls, no decoration.
-* `PreviewPane(lines, [row_selectable], [on_select_row])`: a scrollable panel
+* `PreviewPane(text, [row_selectable], [on_select_row])`: a scrollable panel
   to display a large document in.
 * `SwitchableControl(initial_control)`: control that can switch what
   control it's displaying.
